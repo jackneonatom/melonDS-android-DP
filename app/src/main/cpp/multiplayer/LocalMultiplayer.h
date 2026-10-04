@@ -55,6 +55,11 @@ namespace MelonDSAndroid::LocalMultiplayer
     std::vector<melonDS::WifiLAN::Player> getPlayers();
     melonDS::WifiLAN::Stats getStats();
     void setTuning(const melonDS::WifiLAN::Tuning& tuning);
+
+    // Diagnostics: recent multiplayer / Wi-Fi log lines plus a state snapshot,
+    // so a failed session can be shared and debugged without adb.
+    void appendLog(int level, const char* message);
+    std::string getDiagnostics();
 }
 
 #endif // LOCALMULTIPLAYER_H

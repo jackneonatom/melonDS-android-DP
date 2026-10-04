@@ -110,6 +110,7 @@ public:
         int MinTimeout = 25;        // ms, lower bound (also used when not adaptive)
         int MaxTimeout = 200;       // ms, upper bound for the adaptive wait
         bool Redundancy = true;     // send MP frames twice to peers that support dedupe
+        bool HandshakeLockstep = true; // pause until a console answers our direct frames
     };
 
     struct Stats
@@ -124,6 +125,10 @@ public:
         u32 CurrentTimeoutMs;   // wait currently in effect
         u32 PeerPing[16];       // ENet RTT per player slot, ms
         u16 RedundantPeers;     // bitmask of player slots that negotiated dedupe
+        u32 HandshakeWaits;     // pauses waiting for a reply to a direct frame
+        u32 HandshakeTimeouts;  // ...that ended without a reply
+        u32 LastHandshakeMs;
+        u32 MaxHandshakeMs;
     };
 
     void SetTuning(const Tuning& tuning);
@@ -191,6 +196,12 @@ private:
     void UpdateTimeout();
     void RecordExchange(u64 us, bool complete);
     bool IsDuplicate(const ENetPacket* pkt);
+    bool HandleIncoming(ENetEvent& event);
+
+    bool AwaitReply;            // sent a direct frame, waiting for the answer
+    bool ReplyArrived;
+    u32 AwaitStartMs;
+    u8 AwaitMAC[6];
     void SendToPeers(ENetPacket* pkt, u8 channel, bool redundant);
     void BroadcastDiscovery(const void* data, int len);
 

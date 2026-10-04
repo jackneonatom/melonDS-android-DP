@@ -2,11 +2,15 @@
 
 #include <atomic>
 #include <cstring>
+#include <cstdarg>
 #include <chrono>
 #include <memory>
 #include <random>
 #include <thread>
 #include <arpa/inet.h>
+#include <deque>
+#include <sstream>
+#include <cstdio>
 #include <android/log.h>
 
 #include "MPInterface.h"
@@ -44,6 +48,23 @@ namespace MelonDSAndroid::LocalMultiplayer
 
         std::array<u8, 3> macSuffix;
         std::once_flag macOnce;
+
+        std::mutex logMutex;
+        std::deque<std::string> logLines;
+        std::string lastLogMessage;
+        int lastLogRepeats = 0;
+        const size_t kMaxLogLines = 600;
+        long long logEpochMs = 0;
+
+        void logEvent(const char* fmt, ...)
+        {
+            char buf[256];
+            va_list args;
+            va_start(args, fmt);
+            vsnprintf(buf, sizeof(buf), fmt, args);
+            va_end(args);
+            appendLog(1, buf);
+        }
 
         long long nowMs()
         {
@@ -109,6 +130,7 @@ namespace MelonDSAndroid::LocalMultiplayer
 
     void onMPBegin(int inst)
     {
+        logEvent("emulated Wi-Fi powered on (session %s)", sessionActive.load() ? "active" : "inactive");
         emuBegun = true;
         emuInstance = inst;
         mp().Begin(inst);
@@ -116,6 +138,7 @@ namespace MelonDSAndroid::LocalMultiplayer
 
     void onMPEnd(int inst)
     {
+        logEvent("emulated Wi-Fi powered off");
         emuBegun = false;
         mp().End(inst);
     }
@@ -200,6 +223,7 @@ namespace MelonDSAndroid::LocalMultiplayer
             l.Begin(emuInstance);
         ensurePump();
         LOGI("hosting session for %d players", maxPlayers);
+        logEvent("hosting session as '%s' for %d players", playerName.c_str(), maxPlayers);
         return true;
     }
 
@@ -220,6 +244,7 @@ namespace MelonDSAndroid::LocalMultiplayer
         if (!l.StartClient(playerName.c_str(), hostAddress.c_str()))
         {
             LOGI("failed to join %s", hostAddress.c_str());
+            logEvent("failed to join %s", hostAddress.c_str());
             stopPumpIfIdle();
             return false;
         }
@@ -230,6 +255,7 @@ namespace MelonDSAndroid::LocalMultiplayer
             l.Begin(emuInstance);
         ensurePump();
         LOGI("joined session at %s", hostAddress.c_str());
+        logEvent("joined session at %s as '%s'", hostAddress.c_str(), playerName.c_str());
         return true;
     }
 
@@ -252,6 +278,7 @@ namespace MelonDSAndroid::LocalMultiplayer
 
         stopPumpIfIdle();
         LOGI("session ended");
+        logEvent("session ended");
     }
 
     std::vector<DiscoveredSession> getDiscoveredSessions()
@@ -298,5 +325,83 @@ namespace MelonDSAndroid::LocalMultiplayer
     {
         auto guard = lock();
         getLan().SetTuning(tuning);
+    }
+
+    void appendLog(int level, const char* message)
+    {
+        if (!message) return;
+        std::string msg(message);
+        while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r'))
+            msg.pop_back();
+        if (msg.empty()) return;
+
+        std::lock_guard<std::mutex> guard(logMutex);
+        if (logEpochMs == 0) logEpochMs = nowMs();
+
+        // collapse floods of identical lines
+        if (msg == lastLogMessage)
+        {
+            lastLogRepeats++;
+            return;
+        }
+        if (lastLogRepeats > 0)
+        {
+            logLines.push_back("    (previous line repeated " + std::to_string(lastLogRepeats) + " more times)");
+            lastLogRepeats = 0;
+        }
+        lastLogMessage = msg;
+
+        static const char* levels = "DIWE";
+        char prefix[32];
+        snprintf(prefix, sizeof(prefix), "%8.3f %c ", (nowMs() - logEpochMs) / 1000.0, levels[level & 3]);
+        logLines.push_back(prefix + msg);
+        while (logLines.size() > kMaxLogLines)
+            logLines.pop_front();
+    }
+
+    std::string getDiagnostics()
+    {
+        std::ostringstream out;
+        out << "melonDS Wi-Fi local multiplayer diagnostics\n";
+        out << "session: " << (sessionActive.load() ? (hosting.load() ? "hosting" : "joined") : "none")
+            << ", emulated Wi-Fi " << (emuBegun ? "on" : "off") << "\n";
+        auto mac = sessionMacSuffix();
+        char macbuf[32];
+        snprintf(macbuf, sizeof(macbuf), "xx:xx:xx:%02X:%02X:%02X", mac[0], mac[1], mac[2]);
+        out << "console MAC while in session: " << macbuf << "\n";
+
+        if (WifiLAN* l = lan.load())
+        {
+            auto t = l->GetTuning();
+            out << "tuning: adaptive=" << t.Adaptive << " min=" << t.MinTimeout << "ms max=" << t.MaxTimeout
+                << "ms redundancy=" << t.Redundancy << " handshake-lockstep=" << t.HandshakeLockstep << "\n";
+
+            auto st = l->GetStats();
+            out << "stats: exchanges=" << st.Exchanges << " replyTimeouts=" << st.ReplyTimeouts
+                << " avgExchange=" << st.AvgExchangeUs / 1000.0 << "ms maxExchange(1s)=" << st.MaxExchangeMs
+                << "ms wait=" << st.CurrentTimeoutMs << "ms\n";
+            out << "       stale=" << st.StaleDrops << " dup=" << st.DuplicateDrops << " redundantSent=" << st.RedundantSent
+                << " redundantPeers=" << st.RedundantPeers << "\n";
+            out << "       handshakeWaits=" << st.HandshakeWaits << " handshakeTimeouts=" << st.HandshakeTimeouts
+                << " lastHandshake=" << st.LastHandshakeMs << "ms maxHandshake=" << st.MaxHandshakeMs << "ms\n";
+
+            if (sessionActive.load())
+            {
+                for (const auto& p : l->GetPlayerList())
+                {
+                    out << "player " << p.ID << ": " << std::string(p.Name, strnlen(p.Name, sizeof(p.Name)))
+                        << " status=" << (int) p.Status << (p.IsLocalPlayer ? " (this device)" : "")
+                        << " ping=" << (p.IsLocalPlayer ? 0 : st.PeerPing[p.ID & 0xF]) << "ms\n";
+                }
+            }
+        }
+
+        out << "\n--- log (seconds since first entry) ---\n";
+        std::lock_guard<std::mutex> guard(logMutex);
+        for (const auto& line : logLines)
+            out << line << "\n";
+        if (lastLogRepeats > 0)
+            out << "    (previous line repeated " << lastLogRepeats << " more times)\n";
+        return out.str();
     }
 }

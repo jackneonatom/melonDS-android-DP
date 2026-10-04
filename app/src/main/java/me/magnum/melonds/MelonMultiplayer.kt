@@ -44,7 +44,10 @@ object MelonMultiplayer {
     external fun endSession()
     external fun isSessionActive(): Boolean
     external fun isHost(): Boolean
-    external fun setTuning(adaptive: Boolean, minTimeoutMs: Int, maxTimeoutMs: Int, redundancy: Boolean)
+    external fun setTuning(adaptive: Boolean, minTimeoutMs: Int, maxTimeoutMs: Int, redundancy: Boolean, handshakeLockstep: Boolean)
+
+    /** Recent multiplayer/Wi-Fi log lines plus a state snapshot, for bug reports. */
+    external fun getDiagnostics(): String
 
     private external fun getDiscoveredSessionsInternal(): Array<String>
     private external fun getPlayersInternal(): Array<String>

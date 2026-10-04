@@ -155,6 +155,10 @@ WifiLAN::WifiLAN() noexcept : Inited(false)
     memset(PeerCaps, 0, sizeof(PeerCaps));
     memset(Seen, 0, sizeof(Seen));
     SeenPos = 0;
+    AwaitReply = false;
+    ReplyArrived = false;
+    AwaitStartMs = 0;
+    memset(AwaitMAC, 0, sizeof(AwaitMAC));
     ResetStats();
 
     // TODO make this somewhat nicer
@@ -1117,6 +1121,57 @@ void WifiLAN::ProcessEvent(ENetEvent& event)
 // 0 = per-frame processing of events and eventual misc. frame
 // 1 = checking if a misc. frame has arrived
 // 2 = waiting for a MP frame
+// Validate an ENet event; MP frames are queued for the core, anything else goes
+// to the session logic. Returns true if a frame was queued.
+bool WifiLAN::HandleIncoming(ENetEvent& event)
+{
+    if (!(event.type == ENET_EVENT_TYPE_RECEIVE && event.channelID == Chan_MP))
+    {
+        ProcessEvent(event);
+        return false;
+    }
+
+    MPPacketHeader* header = (MPPacketHeader*)&event.packet->data[0];
+
+    bool good = true;
+    if (event.packet->dataLength < sizeof(MPPacketHeader))
+        good = false;
+    else if (header->Magic != 0x4946494E)
+        good = false;
+    else if (header->SenderID == MyPlayer.ID)
+        good = false;
+    // only MP frames are ever sent twice (see SendPacketGeneric), so only they
+    // need filtering; regular frames always pass through untouched
+    else if ((header->Type & 0xFFFF) != 0 && IsDuplicate(event.packet))
+    {
+        good = false;
+        St.DuplicateDrops++;
+    }
+
+    if (!good)
+    {
+        enet_packet_destroy(event.packet);
+        return false;
+    }
+
+    // a reply to a handshake frame we're waiting on?
+    if (AwaitReply)
+    {
+        if (header->Type != 0)
+            ReplyArrived = true;
+        else if (header->Length >= 12+24 &&
+                 memcmp(&event.packet->data[sizeof(MPPacketHeader) + 12 + 4], AwaitMAC, 6) == 0)
+            ReplyArrived = true;
+    }
+
+    // mark this packet with the time it was received
+    header->Magic = (u32)Platform::GetMSCount();
+
+    event.packet->userData = event.peer;
+    RXQueue.push(event.packet);
+    return true;
+}
+
 void WifiLAN::ProcessLAN(int type, int timeoutms)
 {
     if (!Host) return;
@@ -1168,43 +1223,11 @@ void WifiLAN::ProcessLAN(int type, int timeoutms)
     ENetEvent event;
     while (enet_host_service(Host, &event, timeout) > 0)
     {
-        if (event.type == ENET_EVENT_TYPE_RECEIVE && event.channelID == Chan_MP)
+        if (HandleIncoming(event))
         {
-            MPPacketHeader* header = (MPPacketHeader*)&event.packet->data[0];
-
-            bool good = true;
-            if (event.packet->dataLength < sizeof(MPPacketHeader))
-                good = false;
-            else if (header->Magic != 0x4946494E)
-                good = false;
-            else if (header->SenderID == MyPlayer.ID)
-                good = false;
-            else if (IsDuplicate(event.packet))
-            {
-                good = false;
-                St.DuplicateDrops++;
-            }
-
-            if (!good)
-            {
-                enet_packet_destroy(event.packet);
-            }
-            else
-            {
-                // mark this packet with the time it was received
-                header->Magic = (u32)Platform::GetMSCount();
-
-                event.packet->userData = event.peer;
-                RXQueue.push(event.packet);
-
-                // return now -- if we are receiving MP frames, if we keep going
-                // we'll consume too many even if we have no timeout set
-                return;
-            }
-        }
-        else
-        {
-            ProcessEvent(event);
+            // return now -- if we are receiving MP frames, if we keep going
+            // we'll consume too many even if we have no timeout set
+            return;
         }
 
         if (type == 2)
@@ -1304,6 +1327,27 @@ int WifiLAN::SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp)
     if (len)
         memcpy(&enetpacket->data[sizeof(MPPacketHeader)], packet, len);
 
+    // Regular (non-MP) frames aren't exchanged in lockstep: both consoles keep
+    // running while they travel. That's fine for beacons, but the joining
+    // handshake (authentication / association) has tight reply deadlines in
+    // emulated time, so over Wi-Fi the reply arrives "late" and the DS reports a
+    // communication error. After sending a frame to a specific console, pause on
+    // the next receive until that console answers, so the reply looks instant.
+    if (type == 0 && Tune.HandshakeLockstep && len >= 12+24)
+    {
+        u16 framectl = packet[12] | (packet[13] << 8);
+        const u8* dest = &packet[12 + 4];
+        bool unicast = !(dest[0] & 0x01);
+        bool control = (framectl & 0x000C) == 0x0004;
+        if (unicast && !control)
+        {
+            AwaitReply = true;
+            ReplyArrived = false;
+            AwaitStartMs = (u32)Platform::GetMSCount();
+            memcpy(AwaitMAC, &packet[12 + 10], 6); // our own address (addr2)
+        }
+    }
+
     // MP frames (CMD, reply, ack) are the latency-critical ones worth duplicating;
     // regular frames (beacons etc) are periodic anyway
     bool redundant = Tune.Redundancy && ((type & 0xFFFF) != 0);
@@ -1365,6 +1409,37 @@ int WifiLAN::SendPacket(int inst, u8* packet, int len, u64 timestamp)
 
 int WifiLAN::RecvPacket(int inst, u8* packet, u64* timestamp)
 {
+    if (AwaitReply && Host)
+    {
+        int budget = std::clamp(MPRecvTimeout * 2, 40, std::max(40, Tune.MaxTimeout));
+        u32 start = AwaitStartMs;
+
+        while (!ReplyArrived)
+        {
+            int elapsed = (int)((u32)Platform::GetMSCount() - start);
+            if (elapsed >= budget) break;
+
+            ENetEvent event;
+            if (enet_host_service(Host, &event, budget - elapsed) <= 0)
+                break;
+            HandleIncoming(event);
+        }
+
+        u32 waited = (u32)Platform::GetMSCount() - start;
+        Platform::Mutex_Lock(PlayersMutex);
+        St.HandshakeWaits++;
+        if (!ReplyArrived) St.HandshakeTimeouts++;
+        St.LastHandshakeMs = waited;
+        if (waited > St.MaxHandshakeMs) St.MaxHandshakeMs = waited;
+        Platform::Mutex_Unlock(PlayersMutex);
+
+        Platform::Log(Platform::LogLevel::Info, "LAN: handshake reply %s after %ums\n",
+                      ReplyArrived ? "arrived" : "TIMED OUT", waited);
+
+        AwaitReply = false;
+        ReplyArrived = false;
+    }
+
     return RecvPacketGeneric(packet, false, timestamp);
 }
 
@@ -1391,7 +1466,11 @@ int WifiLAN::RecvHostPacket(int inst, u8* packet, u64* timestamp)
         // check if the host is still connected
 
         if (!(ConnectedBitmask & (1<<LastHostID)))
+        {
+            Platform::Log(Platform::LogLevel::Warn, "LAN: host (player %d) not ready for MP frames; mask=%04X\n",
+                          LastHostID, ConnectedBitmask);
             return -1;
+        }
     }
 
     return RecvPacketGeneric(packet, true, timestamp);

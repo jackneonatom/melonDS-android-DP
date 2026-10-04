@@ -121,14 +121,29 @@ Java_me_magnum_melonds_MelonMultiplayer_getStatsInternal(JNIEnv* env, jobject th
     return arr;
 }
 
+JNIEXPORT jstring JNICALL
+Java_me_magnum_melonds_MelonMultiplayer_getDiagnostics(JNIEnv* env, jobject thiz)
+{
+    // log lines come from games and peers; keep it to printable ASCII so
+    // NewStringUTF never sees invalid modified UTF-8
+    std::string text = LocalMultiplayer::getDiagnostics();
+    for (char& c : text)
+    {
+        unsigned char u = (unsigned char) c;
+        if (u != '\n' && (u < 0x20 || u > 0x7E)) c = '?';
+    }
+    return env->NewStringUTF(text.c_str());
+}
+
 JNIEXPORT void JNICALL
-Java_me_magnum_melonds_MelonMultiplayer_setTuning(JNIEnv* env, jobject thiz, jboolean adaptive, jint minTimeoutMs, jint maxTimeoutMs, jboolean redundancy)
+Java_me_magnum_melonds_MelonMultiplayer_setTuning(JNIEnv* env, jobject thiz, jboolean adaptive, jint minTimeoutMs, jint maxTimeoutMs, jboolean redundancy, jboolean handshakeLockstep)
 {
     melonDS::WifiLAN::Tuning t;
     t.Adaptive = adaptive;
     t.MinTimeout = minTimeoutMs;
     t.MaxTimeout = maxTimeoutMs;
     t.Redundancy = redundancy;
+    t.HandshakeLockstep = handshakeLockstep;
     LocalMultiplayer::setTuning(t);
 }
 }

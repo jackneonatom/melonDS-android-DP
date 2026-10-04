@@ -302,6 +302,17 @@ namespace Platform
         va_list args;
         va_start(args, fmt);
 
+        // keep a copy for the local multiplayer diagnostics while a session runs
+        if (MelonDSAndroid::LocalMultiplayer::isSessionActive())
+        {
+            va_list copy;
+            va_copy(copy, args);
+            char buf[512];
+            vsnprintf(buf, sizeof(buf), fmt, copy);
+            va_end(copy);
+            MelonDSAndroid::LocalMultiplayer::appendLog((int) level, buf);
+        }
+
         switch (level)
         {
             case LogLevel::Debug:

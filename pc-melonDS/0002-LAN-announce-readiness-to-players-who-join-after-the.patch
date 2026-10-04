@@ -1,7 +1,7 @@
 From 47c03ad615c20689eb2f7daf6b5ac939eb6a4c47 Mon Sep 17 00:00:00 2001
 From: melonDS Wi-Fi LAN <rickandmotyc137@gmail.com>
 Date: Sat, 3 Oct 2026 20:42:18 -0500
-Subject: [PATCH 2/2] LAN: announce readiness to players who join after the
+Subject: [PATCH 2/3] LAN: announce readiness to players who join after the
  game started
 
 Cmd_PlayerConnect was only broadcast from Begin(), i.e. when the

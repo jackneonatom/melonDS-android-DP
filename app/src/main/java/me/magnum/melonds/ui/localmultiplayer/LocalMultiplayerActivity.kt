@@ -1,6 +1,7 @@
 package me.magnum.melonds.ui.localmultiplayer
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.widget.Toast
@@ -84,6 +85,7 @@ class LocalMultiplayerActivity : AppCompatActivity() {
         private const val PREF_MAX_WAIT = "local_mp_max_wait"
         private const val PREF_ADAPTIVE = "local_mp_adaptive"
         private const val PREF_REDUNDANCY = "local_mp_redundancy"
+        private const val PREF_HANDSHAKE = "local_mp_handshake_lockstep"
 
         /** Applies the saved tuning. Safe to call before any session exists. */
         fun applySavedTuning(context: Context) {
@@ -93,6 +95,7 @@ class LocalMultiplayerActivity : AppCompatActivity() {
                 minTimeoutMs = 25,
                 maxTimeoutMs = prefs.getInt(PREF_MAX_WAIT, 200),
                 redundancy = prefs.getBoolean(PREF_REDUNDANCY, true),
+                handshakeLockstep = prefs.getBoolean(PREF_HANDSHAKE, true),
             )
         }
     }
@@ -131,17 +134,28 @@ class LocalMultiplayerActivity : AppCompatActivity() {
                     initialMaxWait = prefs.getInt(PREF_MAX_WAIT, 200),
                     initialAdaptive = prefs.getBoolean(PREF_ADAPTIVE, true),
                     initialRedundancy = prefs.getBoolean(PREF_REDUNDANCY, true),
+                    initialHandshake = prefs.getBoolean(PREF_HANDSHAKE, true),
                     onNameChanged = { prefs.edit { putString(PREF_PLAYER_NAME, it) } },
-                    onTuningChanged = { adaptive, maxWait, redundancy ->
+                    onTuningChanged = { adaptive, maxWait, redundancy, handshake ->
                         prefs.edit {
                             putBoolean(PREF_ADAPTIVE, adaptive)
                             putInt(PREF_MAX_WAIT, maxWait)
                             putBoolean(PREF_REDUNDANCY, redundancy)
+                            putBoolean(PREF_HANDSHAKE, handshake)
                         }
                         applySavedTuning(this@LocalMultiplayerActivity)
                     },
                     onPickGame = { finish() },
                     onOpenDownloadPlay = { launchValidator.validateFirmware(ConsoleType.DS) },
+                    onShareDiagnostics = {
+                        val text = MelonMultiplayer.getDiagnostics()
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "melonDS local multiplayer diagnostics")
+                            putExtra(Intent.EXTRA_TEXT, text)
+                        }
+                        startActivity(Intent.createChooser(send, getString(R.string.localmp_share_diagnostics)))
+                    },
                     onBackClick = { onSupportNavigateUp() },
                 )
             }
@@ -178,10 +192,12 @@ private fun LocalMultiplayerScreen(
     initialMaxWait: Int,
     initialAdaptive: Boolean,
     initialRedundancy: Boolean,
+    initialHandshake: Boolean,
     onNameChanged: (String) -> Unit,
-    onTuningChanged: (adaptive: Boolean, maxWait: Int, redundancy: Boolean) -> Unit,
+    onTuningChanged: (adaptive: Boolean, maxWait: Int, redundancy: Boolean, handshake: Boolean) -> Unit,
     onPickGame: () -> Unit,
     onOpenDownloadPlay: () -> Unit,
+    onShareDiagnostics: () -> Unit,
     onBackClick: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -202,6 +218,7 @@ private fun LocalMultiplayerScreen(
     var adaptive by remember { mutableStateOf(initialAdaptive) }
     var maxWait by remember { mutableFloatStateOf(initialMaxWait.toFloat()) }
     var redundancy by remember { mutableStateOf(initialRedundancy) }
+    var handshake by remember { mutableStateOf(initialHandshake) }
     var showAdvanced by remember { mutableStateOf(false) }
 
     // poll native state; cheap, and keeps this screen free of callbacks from the emulator thread
@@ -405,25 +422,34 @@ private fun LocalMultiplayerScreen(
                 ) { Text(stringResource(R.string.localmp_leave)) }
             }
 
+            OutlinedButton(onClick = onShareDiagnostics, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.localmp_share_diagnostics))
+            }
+
             TextButton(onClick = { showAdvanced = !showAdvanced }) { Text(stringResource(R.string.localmp_advanced)) }
             if (showAdvanced) {
                 Section(null) {
                     SwitchRow(stringResource(R.string.localmp_adaptive_wait), adaptive) {
                         adaptive = it
-                        onTuningChanged(adaptive, maxWait.toInt(), redundancy)
+                        onTuningChanged(adaptive, maxWait.toInt(), redundancy, handshake)
                     }
                     Text(stringResource(R.string.localmp_max_wait, maxWait.toInt()))
                     Slider(
                         value = maxWait,
                         onValueChange = { maxWait = (it / 10f).toInt() * 10f },
-                        onValueChangeFinished = { onTuningChanged(adaptive, maxWait.toInt(), redundancy) },
+                        onValueChangeFinished = { onTuningChanged(adaptive, maxWait.toInt(), redundancy, handshake) },
                         valueRange = 25f..500f,
                     )
                     Text(stringResource(R.string.localmp_max_wait_hint), style = MaterialTheme.typography.caption)
                     SwitchRow(stringResource(R.string.localmp_redundancy), redundancy) {
                         redundancy = it
-                        onTuningChanged(adaptive, maxWait.toInt(), redundancy)
+                        onTuningChanged(adaptive, maxWait.toInt(), redundancy, handshake)
                     }
+                    SwitchRow(stringResource(R.string.localmp_handshake_lockstep), handshake) {
+                        handshake = it
+                        onTuningChanged(adaptive, maxWait.toInt(), redundancy, handshake)
+                    }
+                    Text(stringResource(R.string.localmp_handshake_lockstep_hint), style = MaterialTheme.typography.caption)
                 }
             }
             Spacer(Modifier.height(8.dp))
