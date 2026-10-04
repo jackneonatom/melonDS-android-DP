@@ -1,3 +1,5 @@
+#include <random>
+#include "multiplayer/LocalMultiplayer.h"
 #include <assert.h>
 #include <codecvt>
 #include <optional>
@@ -152,10 +154,12 @@ void customizeFirmware(const EmulatorConfiguration& configuration, Firmware& fir
     MacAddress configuredMac;
     if (firmwareConfig.randomizeMacAddress)
     {
+        // rand() was never seeded, so every device "randomized" to the same MAC
+        std::random_device rd;
         configuredMac = mac;
-        configuredMac[3] = rand() % 256;
-        configuredMac[4] = rand() % 256;
-        configuredMac[5] = rand() % 256;
+        configuredMac[3] = rd() & 0xFF;
+        configuredMac[4] = rd() & 0xFF;
+        configuredMac[5] = rd() & 0xFF;
         replaceMac = true;
     }
     else if (isInternalFirmware)
@@ -165,6 +169,18 @@ void customizeFirmware(const EmulatorConfiguration& configuration, Firmware& fir
 
     if (replaceMac)
         mac = configuredMac;
+
+    if (LocalMultiplayer::isSessionActive())
+    {
+        // Two devices often share one firmware dump, which would make them the
+        // same console as far as DS wireless is concerned (Download Play then
+        // fails silently). Keep Nintendo's OUI, make the rest unique per device.
+        auto suffix = LocalMultiplayer::sessionMacSuffix();
+        mac[3] = suffix[0];
+        mac[4] = suffix[1];
+        mac[5] = suffix[2];
+        replaceMac = true;
+    }
 
     if (instanceId > 0)
     {

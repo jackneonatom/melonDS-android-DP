@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="local_multiplayer">Local multiplayer (Wi-Fi)</string>
+    <string name="localmp_player_name">Your name</string>
+    <string name="localmp_host_title">Host</string>
+    <string name="localmp_host_description">Run the game on this device. Other players join this device, then use Download Play or their own copy of the game.</string>
+    <string name="localmp_max_players">Players: %1$d</string>
+    <string name="localmp_host_button">Host session</string>
+    <string name="localmp_join_title">Join</string>
+    <string name="localmp_join_description">Sessions on the same Wi-Fi or hotspot appear here. If one doesn\'t show up, type the host\'s address.</string>
+    <string name="localmp_searching">Searching for sessions…</string>
+    <string name="localmp_session_entry">%1$s · %2$d/%3$d players · %4$s</string>
+    <string name="localmp_host_address">Host address</string>
+    <string name="localmp_join_button">Join</string>
+    <string name="localmp_joining">Connecting…</string>
+    <string name="localmp_my_addresses">This device\'s addresses</string>
+    <string name="localmp_no_addresses">Not connected to Wi-Fi or a hotspot</string>
+    <string name="localmp_tips_title">For the lowest latency</string>
+    <string name="localmp_tips">• Turn on the hotspot on one phone and connect the other to it, or put both on the same 5 GHz Wi-Fi.\n• Turn off battery saver on both devices.\n• Start the session here before launching a game or Download Play.\n• Download Play needs DS BIOS and firmware dumps on the receiving device.\n• A PC running melonDS can join or host too: System → Multiplayer → Host/Join LAN game.</string>
+    <string name="localmp_status_hosting">Hosting session</string>
+    <string name="localmp_status_connected">Connected to session</string>
+    <string name="localmp_players">Players</string>
+    <string name="localmp_player_you">%1$s (you)</string>
+    <string name="localmp_player_ping">%1$d ms</string>
+    <string name="localmp_pick_game">Pick a game</string>
+    <string name="localmp_open_download_play">Open DS Download Play</string>
+    <string name="localmp_host_next_steps">Now pick a game and open its multiplayer or Download Play menu. Keep this session running.</string>
+    <string name="localmp_client_next_steps">Open DS Download Play to receive the host\'s game, or pick your own copy for multi-card play.</string>
+    <string name="localmp_link_title">Link quality</string>
+    <string name="localmp_link_stats">Round trip: %1$.1f ms avg · %2$d ms worst (last second)\nWait limit: %3$d ms · missed replies: %4$d of %5$d\nDuplicate frames: %6$s</string>
+    <string name="localmp_redundancy_on">on</string>
+    <string name="localmp_redundancy_off">off (other side doesn\'t support it)</string>
+    <string name="localmp_advanced">Advanced</string>
+    <string name="localmp_adaptive_wait">Adapt wait to the connection</string>
+    <string name="localmp_max_wait">Longest wait for a reply: %1$d ms</string>
+    <string name="localmp_max_wait_hint">Higher survives worse Wi-Fi without \"communication error\", at the cost of brief slowdowns.</string>
+    <string name="localmp_redundancy">Send frames twice</string>
+    <string name="localmp_leave">Leave session</string>
+    <string name="localmp_host_failed">Couldn\'t host. Is another session already running on this device?</string>
+    <string name="localmp_join_failed">Couldn\'t connect to %1$s. Check that both devices are on the same network.</string>
+</resources>

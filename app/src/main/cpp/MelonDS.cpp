@@ -20,6 +20,7 @@
 #include "RewindManager.h"
 #include "ROMManager.h"
 #include "MPInterface.h"
+#include "multiplayer/LocalMultiplayer.h"
 #include "AndroidCameraHandler.h"
 #include "renderer/ScreenshotRenderer.h"
 #include "renderer/FrameQueue.h"
@@ -206,7 +207,7 @@ namespace MelonDSAndroid
 
     u32 loop()
     {
-        MPInterface::Get().Process();
+        LocalMultiplayer::onEmulatorFrame();
         return instance->runFrame();
     }
 
