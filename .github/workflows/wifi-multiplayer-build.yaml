@@ -64,7 +64,7 @@ jobs:
         run: |
           chmod +x ./gradlew
           set -o pipefail
-          if ! ./gradlew :app:testGitHubNightlyReleaseUnitTest --console=plain 2>&1 | tee test.log; then
+          if ! ./gradlew :app:testGitHubNightlyDebugUnitTest --console=plain 2>&1 | tee test.log; then
             # compile errors, or failing tests from the JUnit XML reports
             grep -E "^e: |What went wrong" -A3 test.log | head -40 > errors.txt || true
             python3 - >> errors.txt <<'PY' || true
