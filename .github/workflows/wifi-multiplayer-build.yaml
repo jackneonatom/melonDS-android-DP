@@ -65,7 +65,14 @@ jobs:
           COMMIT=$(git rev-parse --short HEAD)
           sed -i -e 's/\(versionName = "\)\(.*\)\("\)/\1\2 Wi-Fi MP ('"$COMMIT"')\3/g' buildSrc/src/main/kotlin/AppConfig.kt
           chmod +x ./gradlew
-          ./gradlew :app:assembleGitHubNightlyRelease
+          set -o pipefail
+          if ! ./gradlew :app:assembleGitHubNightlyRelease --console=plain 2>&1 | tee build.log; then
+            # surface compiler errors as annotations so they're readable without the raw log
+            grep -E "^e: |error:|\berror\b.*\.(cpp|h|kt):|FAILED|What went wrong" -A3 build.log | head -60 > errors.txt || true
+            [ -s errors.txt ] || tail -60 build.log > errors.txt
+            echo "::error title=Build failed::$(sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g' errors.txt)"
+            exit 1
+          fi
           cp app/build/outputs/apk/gitHubNightly/release/app-gitHub-nightly-release.apk melonDS-wifi-multiplayer.apk
 
       - name: Upload artifact
