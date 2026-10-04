@@ -55,6 +55,9 @@ add_library(
         ${ANDROID-CPP}/SDCardArgsBuilder.cpp
         ${ANDROID-CPP}/SaveManager.cpp
         ${ANDROID-CPP}/UriFileHandler.cpp
+        ${ANDROID-CPP}/multiplayer/WifiLAN.cpp
+        ${ANDROID-CPP}/multiplayer/LocalMultiplayer.cpp
+        ${ANDROID-CPP}/multiplayer/LocalMultiplayerJNI.cpp
         ${ANDROID-CPP}/performancehint/JniPerformanceHintManager.cpp
         ${ANDROID-CPP}/performancehint/NdkPerformanceHintManager.cpp
         ${ANDROID-CPP}/performancehint/PerformanceHintManagerFactory.cpp

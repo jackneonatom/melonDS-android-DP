@@ -35,6 +35,7 @@
 #include "MelonInstance.h"
 #include "MelonLog.h"
 #include "net/MPInterface.h"
+#include "multiplayer/LocalMultiplayer.h"
 
 using namespace melonDS;
 
@@ -504,55 +505,71 @@ namespace Platform
     void MP_Begin(void* userdata)
     {
         auto emulatorInstance = (MelonDSAndroid::MelonInstance*) userdata;
-        MPInterface::Get().Begin(emulatorInstance->getInstanceId());
+        auto guard = MelonDSAndroid::LocalMultiplayer::lock();
+        MelonDSAndroid::LocalMultiplayer::onMPBegin(emulatorInstance->getInstanceId());
     }
 
     void MP_End(void* userdata)
     {
         auto emulatorInstance = (MelonDSAndroid::MelonInstance*) userdata;
-        MPInterface::Get().End(emulatorInstance->getInstanceId());
+        auto guard = MelonDSAndroid::LocalMultiplayer::lock();
+        MelonDSAndroid::LocalMultiplayer::onMPEnd(emulatorInstance->getInstanceId());
     }
 
     int MP_SendPacket(u8* data, int len, u64 timestamp, void* userdata)
     {
         auto emulatorInstance = (MelonDSAndroid::MelonInstance*) userdata;
-        return MPInterface::Get().SendPacket(emulatorInstance->getInstanceId(), data, len, timestamp);
+        auto guard = MelonDSAndroid::LocalMultiplayer::lock();
+
+        return MelonDSAndroid::LocalMultiplayer::mp().SendPacket(emulatorInstance->getInstanceId(), data, len, timestamp);
     }
 
     int MP_RecvPacket(u8* data, u64* timestamp, void* userdata)
     {
         auto emulatorInstance = (MelonDSAndroid::MelonInstance*) userdata;
-        return MPInterface::Get().RecvPacket(emulatorInstance->getInstanceId(), data, timestamp);
+        auto guard = MelonDSAndroid::LocalMultiplayer::lock();
+
+        return MelonDSAndroid::LocalMultiplayer::mp().RecvPacket(emulatorInstance->getInstanceId(), data, timestamp);
     }
 
     int MP_SendCmd(u8* data, int len, u64 timestamp, void* userdata)
     {
         auto emulatorInstance = (MelonDSAndroid::MelonInstance*) userdata;
-        return MPInterface::Get().SendCmd(emulatorInstance->getInstanceId(), data, len, timestamp);
+        auto guard = MelonDSAndroid::LocalMultiplayer::lock();
+
+        return MelonDSAndroid::LocalMultiplayer::mp().SendCmd(emulatorInstance->getInstanceId(), data, len, timestamp);
     }
 
     int MP_SendReply(u8* data, int len, u64 timestamp, u16 aid, void* userdata)
     {
         auto emulatorInstance = (MelonDSAndroid::MelonInstance*) userdata;
-        return MPInterface::Get().SendReply(emulatorInstance->getInstanceId(), data, len, timestamp, aid);
+        auto guard = MelonDSAndroid::LocalMultiplayer::lock();
+
+        return MelonDSAndroid::LocalMultiplayer::mp().SendReply(emulatorInstance->getInstanceId(), data, len, timestamp, aid);
     }
 
     int MP_SendAck(u8* data, int len, u64 timestamp, void* userdata)
     {
         auto emulatorInstance = (MelonDSAndroid::MelonInstance*) userdata;
-        return MPInterface::Get().SendAck(emulatorInstance->getInstanceId(), data, len, timestamp);
+        auto guard = MelonDSAndroid::LocalMultiplayer::lock();
+
+        return MelonDSAndroid::LocalMultiplayer::mp().SendAck(emulatorInstance->getInstanceId(), data, len, timestamp);
     }
 
     int MP_RecvHostPacket(u8* data, u64* timestamp, void* userdata)
     {
         auto emulatorInstance = (MelonDSAndroid::MelonInstance*) userdata;
-        return MPInterface::Get().RecvHostPacket(emulatorInstance->getInstanceId(), data, timestamp);
+        auto guard = MelonDSAndroid::LocalMultiplayer::lock();
+
+        return MelonDSAndroid::LocalMultiplayer::mp().RecvHostPacket(emulatorInstance->getInstanceId(), data, timestamp);
     }
 
     u16 MP_RecvReplies(u8* data, u64 timestamp, u16 aidmask, void* userdata)
     {
         auto emulatorInstance = (MelonDSAndroid::MelonInstance*) userdata;
-        return MPInterface::Get().RecvReplies(emulatorInstance->getInstanceId(), data, timestamp, aidmask);
+        auto guard = MelonDSAndroid::LocalMultiplayer::lock();
+
+        return MelonDSAndroid::LocalMultiplayer::mp().RecvReplies(emulatorInstance->getInstanceId(), data, timestamp, aidmask);
     }
 
     int Net_SendPacket(u8* data, int len, void* userdata)
