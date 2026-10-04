@@ -18,18 +18,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           java-version: '21'
           distribution: zulu
           cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # GitHub's Ubuntu runners ship with the Android SDK; Gradle fetches any
+      # missing platform/NDK packages itself once the licenses are accepted
+      - name: Use preinstalled Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" 
+          SDKM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)
+          echo "sdkmanager: $SDKM"
+          yes | "$SDKM" --licenses > /dev/null || true
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Prepare signing key
         env:
@@ -62,7 +69,7 @@ jobs:
           cp app/build/outputs/apk/gitHubNightly/release/app-gitHub-nightly-release.apk melonDS-wifi-multiplayer.apk
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: melonDS-wifi-multiplayer
           path: melonDS-wifi-multiplayer.apk
