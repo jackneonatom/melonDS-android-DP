@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <algorithm>
+#include <chrono>
 
 #ifdef __WIN32__
     #include <winsock2.h>
@@ -100,6 +101,13 @@ static void DisableThrottle(ENetPeer* peer)
     enet_peer_throttle_configure(peer, ENET_PEER_PACKET_THROTTLE_INTERVAL,
                                  ENET_PEER_PACKET_THROTTLE_SCALE, 0);
     peer->packetThrottle = ENET_PEER_PACKET_THROTTLE_SCALE;
+}
+
+// The Android platform layer doesn't implement Platform::GetUSCount()
+static u64 MonotonicUS()
+{
+    using namespace std::chrono;
+    return (u64)duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
 static u32 HashBytes(const u8* data, size_t len)
@@ -1401,17 +1409,17 @@ u16 WifiLAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
 
     // the wait is a deadline for the whole exchange, not per packet, so that
     // N clients don't turn into N times the timeout
-    u64 start = Platform::GetUSCount();
+    u64 start = MonotonicUS();
     int timeout = MPRecvTimeout;
 
     for (;;)
     {
-        int elapsed = (int)((Platform::GetUSCount() - start) / 1000);
+        int elapsed = (int)((MonotonicUS() - start) / 1000);
         ProcessLAN(2, std::max(0, timeout - elapsed));
         if (RXQueue.empty())
         {
             // no more replies available
-            RecordExchange(Platform::GetUSCount() - start, false);
+            RecordExchange(MonotonicUS() - start, false);
             return ret;
         }
 
@@ -1443,7 +1451,7 @@ u16 WifiLAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
             {
                 // all the clients have sent their reply
                 enet_packet_destroy(enetpacket);
-                RecordExchange(Platform::GetUSCount() - start, true);
+                RecordExchange(MonotonicUS() - start, true);
                 return ret;
             }
         }
