@@ -9,6 +9,7 @@ on:
 
 jobs:
   github-release:
+    if: github.repository == 'rafaelvcaetano/melonDS-android'
     runs-on: ubuntu-latest
 
     steps:

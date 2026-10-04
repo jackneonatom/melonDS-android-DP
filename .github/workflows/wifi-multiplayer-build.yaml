@@ -1,0 +1,84 @@
+name: Wi-Fi local multiplayer build
+
+# Builds an installable APK of this branch. Runs on your fork without any setup:
+# if MELONDS_KEYSTORE / MELONDS_KEYSTORE_PASSWORD secrets exist they're used,
+# otherwise a throwaway signing key is generated for each build (which means a
+# new build can't be installed over an old one without uninstalling first --
+# add the secrets to avoid that).
+
+on:
+  push:
+    branches: [ 'wifi-local-multiplayer' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: zulu
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prepare signing key
+        env:
+          MELONDS_KEYSTORE: ${{ secrets.MELONDS_KEYSTORE }}
+          MELONDS_KEYSTORE_PASSWORD: ${{ secrets.MELONDS_KEYSTORE_PASSWORD }}
+        run: |
+          KS="${{ runner.temp }}/keystore.jks"
+          if [ -n "$MELONDS_KEYSTORE" ] && [ -n "$MELONDS_KEYSTORE_PASSWORD" ]; then
+            echo "$MELONDS_KEYSTORE" | base64 -d > "$KS"
+            PASS="$MELONDS_KEYSTORE_PASSWORD"
+            echo "Using signing key from repository secrets"
+          else
+            PASS=$(openssl rand -hex 16)
+            keytool -genkeypair -keystore "$KS" -storepass "$PASS" -keypass "$PASS" \
+              -alias melonds -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=melonDS Wi-Fi local multiplayer test build"
+            echo "::notice::No signing secrets set; generated a throwaway key for this build"
+          fi
+          echo "MELONDS_KEYSTORE=$KS" >> local.properties
+          echo "MELONDS_KEYSTORE_PASSWORD=$PASS" >> local.properties
+          echo "MELONDS_KEY_ALIAS=melonds" >> local.properties
+          echo "MELONDS_KEY_PASSWORD=$PASS" >> local.properties
+
+      - name: Build APK
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          sed -i -e 's/\(versionName = "\)\(.*\)\("\)/\1\2 Wi-Fi MP ('"$COMMIT"')\3/g' buildSrc/src/main/kotlin/AppConfig.kt
+          chmod +x ./gradlew
+          ./gradlew :app:assembleGitHubNightlyRelease
+          cp app/build/outputs/apk/gitHubNightly/release/app-gitHub-nightly-release.apk melonDS-wifi-multiplayer.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: melonDS-wifi-multiplayer
+          path: melonDS-wifi-multiplayer.apk
+
+      - name: Publish downloadable build
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          prerelease: true
+          removeArtifacts: true
+          tag: wifi-multiplayer-latest
+          commit: ${{ github.sha }}
+          name: 'Wi-Fi local multiplayer (latest build)'
+          body: |
+            Test build of the Wi-Fi local multiplayer branch (Download Play / multi-card play between devices).
+            Installs next to the official melonDS app. Open it, then ROM list > ⋮ > Local multiplayer (Wi-Fi).
+          artifacts: melonDS-wifi-multiplayer.apk
+          artifactContentType: application/vnd.android.package-archive
+          token: ${{ secrets.GITHUB_TOKEN }}
