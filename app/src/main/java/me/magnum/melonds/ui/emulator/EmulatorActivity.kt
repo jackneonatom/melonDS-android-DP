@@ -1,5 +1,7 @@
 package me.magnum.melonds.ui.emulator
 
+import me.magnum.melonds.ui.emulator.input.TouchStickController
+import me.magnum.melonds.domain.repositories.SettingsRepository
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -163,6 +165,12 @@ class EmulatorActivity : AppCompatActivity() {
 
     @Inject
     lateinit var appForegroundStateObserver: AppForegroundStateObserver
+
+    @Inject
+    lateinit var settingsRepository: SettingsRepository
+
+    private val touchStickController by lazy { TouchStickController(settingsRepository.getTouchStickSettings()) }
+    private var inputProcessor: InputProcessor? = null
 
     private var presentation: ExternalPresentation? = null
 
@@ -721,6 +729,8 @@ class EmulatorActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // settings may have changed in another screen
+        touchStickController.settings = settingsRepository.getTouchStickSettings()
         choreographerFrameRenderer.startRendering()
         emulatorMotionManager.resume()
 
@@ -850,7 +860,10 @@ class EmulatorActivity : AppCompatActivity() {
     }
 
     private fun setupInputHandling(controllerConfiguration: ControllerConfiguration) {
-        nativeInputListener = InputProcessor(controllerConfiguration, melonTouchHandler, frontendInputHandler)
+        inputProcessor?.releaseAll()
+        val processor = InputProcessor(controllerConfiguration, melonTouchHandler, frontendInputHandler, touchStickController::onStick)
+        inputProcessor = processor
+        nativeInputListener = processor
     }
 
     private fun handleBackPressed() {
@@ -1015,6 +1028,8 @@ class EmulatorActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        touchStickController.stop()
+        inputProcessor?.releaseAll()
         enableScreenTimeOut()
         choreographerFrameRenderer.stopRendering()
         emulatorMotionManager.pause()

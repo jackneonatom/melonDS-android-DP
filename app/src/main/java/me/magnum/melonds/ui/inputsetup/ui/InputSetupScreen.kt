@@ -4,46 +4,56 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.exclude
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.AlertDialog
+import androidx.compose.material.ContentAlpha
+import androidx.compose.material.Divider
 import androidx.compose.material.Icon
 import androidx.compose.material.IconButton
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Scaffold
 import androidx.compose.material.Text
-import androidx.compose.material.TopAppBar
 import androidx.compose.material.TextButton
+import androidx.compose.material.TopAppBar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.FocusRequester.Companion.FocusRequesterFactory.component1
-import androidx.compose.ui.focus.FocusRequester.Companion.FocusRequesterFactory.component2
-import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.vector.rememberVectorPainter
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.Flow
@@ -62,17 +72,26 @@ fun InputSetupScreen(
 ) {
     val inputConfig by viewModel.inputConfiguration.collectAsStateWithLifecycle()
     val inputUnderConfiguration by viewModel.inputUnderAssignment.collectAsStateWithLifecycle()
-    val onInputAssignedEvent = viewModel.onInputAssignedEvent
 
     InputSetupScreenContent(
         inputConfig = inputConfig,
         inputUnderConfiguration = inputUnderConfiguration,
-        onInputAssignedEvent = onInputAssignedEvent,
+        onInputAssignedEvent = viewModel.onInputAssignedEvent,
         onInputClick = viewModel::startInputAssignment,
+        onRemoveAssignment = viewModel::removeAssignment,
         onClearInputClick = viewModel::clearInputAssignment,
+        onResetDefaults = viewModel::resetToDefaults,
         onCancelInputConfiguration = viewModel::stopInputAssignment,
         onBackClick = onBackClick,
     )
+}
+
+private enum class MappingSection { DS, TOUCH_STICK, EMULATOR }
+
+private fun sectionOf(input: Input): MappingSection = when {
+    input in Input.TOUCH_STICK_DIRECTIONS -> MappingSection.TOUCH_STICK
+    input.isSystemInput -> MappingSection.DS
+    else -> MappingSection.EMULATOR
 }
 
 @Composable
@@ -81,11 +100,14 @@ private fun InputSetupScreenContent(
     inputUnderConfiguration: Input?,
     onInputAssignedEvent: Flow<Input>,
     onInputClick: (Input) -> Unit,
+    onRemoveAssignment: (Input, InputConfig.Assignment) -> Unit,
     onClearInputClick: (Input) -> Unit,
+    onResetDefaults: () -> Unit,
     onCancelInputConfiguration: () -> Unit,
     onBackClick: () -> Unit,
 ) {
     val focusManager = LocalFocusManager.current
+    var showResetDialog by rememberSaveable { mutableStateOf(false) }
 
     BackHandler(enabled = inputUnderConfiguration != null) {
         onCancelInputConfiguration()
@@ -96,6 +118,13 @@ private fun InputSetupScreenContent(
         }
     }
 
+    // where each physical input is used, to point out shared bindings
+    val usage = remember(inputConfig) {
+        val map = HashMap<InputConfig.Assignment, MutableList<Input>>()
+        inputConfig.forEach { config -> config.assignments.forEach { map.getOrPut(it) { mutableListOf() }.add(config.input) } }
+        map
+    }
+
     Scaffold(
         topBar = {
             Box(Modifier.background(MaterialTheme.colors.primaryVariant).statusBarsPadding()) {
@@ -104,10 +133,12 @@ private fun InputSetupScreenContent(
                     backgroundColor = MaterialTheme.colors.primary,
                     navigationIcon = {
                         IconButton(onClick = onBackClick) {
-                            Icon(
-                                painter = rememberVectorPainter(Icons.AutoMirrored.Filled.ArrowBack),
-                                contentDescription = stringResource(R.string.clear),
-                            )
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { showResetDialog = true }) {
+                            Icon(Icons.Default.RestartAlt, contentDescription = stringResource(R.string.mapping_reset_defaults))
                         }
                     },
                     windowInsets = WindowInsets.safeDrawing.exclude(WindowInsets(bottom = Int.MAX_VALUE)),
@@ -122,108 +153,222 @@ private fun InputSetupScreenContent(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = padding,
             ) {
-                items(
-                    items = inputConfig,
-                    key = { it.input },
-                ) {
-                    Input(
-                        config = it,
-                        isBeingConfigured = it.input == inputUnderConfiguration,
-                        onClick = { onInputClick(it.input) },
-                        onClearClick = { onClearInputClick(it.input) },
+                item(key = "help") {
+                    Text(
+                        text = stringResource(R.string.mapping_help),
+                        style = MaterialTheme.typography.body2,
+                        color = MaterialTheme.colors.onSurface.copy(alpha = ContentAlpha.medium),
+                        modifier = Modifier.padding(16.dp),
                     )
                 }
-            }
 
-            if (inputUnderConfiguration != null) {
-                WaitingForInputOverlay(onCancelInputConfiguration)
-            }
-        }
-    }
-}
-
-@Composable
-private fun Input(
-    config: InputConfig,
-    isBeingConfigured: Boolean,
-    onClick: () -> Unit,
-    onClearClick: () -> Unit,
-) {
-    val (main, clear) = remember { FocusRequester.createRefs() }
-
-    Row(
-        modifier = Modifier.focusRequester(main)
-            .focusProperties { end = if (config.hasKeyAssigned()) clear else FocusRequester.Default }
-            .clickable(onClick = onClick)
-            .padding(start = 16.dp, top = 16.dp, end = 8.dp, bottom = 16.dp),
-    ) {
-        Column(Modifier.weight(1f)) {
-            val inputString = if (isBeingConfigured) {
-                stringResource(R.string.press_any_button)
-            } else {
-                val assignments = listOf(config.assignment, config.altAssignment).filter { it != InputConfig.Assignment.None }
-                if (assignments.isEmpty()) {
-                    stringResource(R.string.not_set)
-                } else {
-                    assignments.joinToString(" / ") { assignment ->
-                        when (assignment) {
-                            is InputConfig.Assignment.Key -> {
-                                val keyCodeString = KeyEvent.keyCodeToString(assignment.keyCode)
-                                keyCodeString.replace("KEYCODE", "").replace("_", " ").trim()
-                            }
-                            is InputConfig.Assignment.Axis -> {
-                                val axisString = MotionEvent.axisToString(assignment.axisCode)
-                                val axisPrettyName = axisString.replace("_", " ").trim()
-                                val prefix = if (assignment.direction == InputConfig.Assignment.Axis.Direction.NEGATIVE) "-" else ""
-                                "$prefix$axisPrettyName"
-                            }
-                            InputConfig.Assignment.None -> ""
+                var lastSection: MappingSection? = null
+                inputConfig.forEach { config ->
+                    val section = sectionOf(config.input)
+                    if (section != lastSection) {
+                        lastSection = section
+                        item(key = "section_$section") { SectionHeader(section) }
+                    }
+                    item(key = config.input) {
+                        Column {
+                        InputRow(
+                            config = config,
+                            isBeingConfigured = config.input == inputUnderConfiguration,
+                            sharedWith = { assignment -> usage[assignment].orEmpty().filter { it != config.input } },
+                            onClick = { onInputClick(config.input) },
+                            onRemoveAssignment = { onRemoveAssignment(config.input, it) },
+                            onClearClick = { onClearInputClick(config.input) },
+                        )
+                        Divider()
                         }
                     }
                 }
             }
 
-            Text(
-                text = getInputName(config.input) ?: "",
-                style = MaterialTheme.typography.body1,
-            )
+            if (inputUnderConfiguration != null) {
+                WaitingForInputOverlay(
+                    inputName = getInputName(inputUnderConfiguration) ?: "",
+                    onCancel = onCancelInputConfiguration,
+                )
+            }
+        }
+    }
 
+    if (showResetDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetDialog = false },
+            text = { Text(stringResource(R.string.mapping_reset_defaults_confirm)) },
+            confirmButton = {
+                TextButton(onClick = { showResetDialog = false; onResetDefaults() }) {
+                    Text(stringResource(R.string.mapping_reset_defaults))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetDialog = false }) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SectionHeader(section: MappingSection) {
+    val title = when (section) {
+        MappingSection.DS -> R.string.mapping_section_ds
+        MappingSection.TOUCH_STICK -> R.string.mapping_section_touch_stick
+        MappingSection.EMULATOR -> R.string.mapping_section_emulator
+    }
+    Text(
+        text = stringResource(title),
+        style = MaterialTheme.typography.subtitle2,
+        color = MaterialTheme.colors.secondary,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 4.dp),
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun InputRow(
+    config: InputConfig,
+    isBeingConfigured: Boolean,
+    sharedWith: (InputConfig.Assignment) -> List<Input>,
+    onClick: () -> Unit,
+    onRemoveAssignment: (InputConfig.Assignment) -> Unit,
+    onClearClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 16.dp, top = 12.dp, end = 4.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
             Text(
-                text = inputString,
+                text = getInputName(config.input) ?: config.input.name,
                 style = MaterialTheme.typography.body1,
-                color = MaterialTheme.colors.onBackground,
             )
+            Spacer(Modifier.height(6.dp))
+
+            if (isBeingConfigured) {
+                Text(stringResource(R.string.press_any_button), style = MaterialTheme.typography.body2)
+            } else {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    config.assignments.forEach { assignment ->
+                        BindingChip(
+                            label = describeAssignment(assignment),
+                            sharedWith = sharedWith(assignment).mapNotNull { getInputName(it) },
+                            onRemove = { onRemoveAssignment(assignment) },
+                        )
+                    }
+                    AddChip(onClick = onClick, emphasized = config.assignments.isEmpty())
+                }
+            }
         }
         if (config.hasKeyAssigned()) {
-            IconButton(
-                modifier = Modifier.focusRequester(clear).focusProperties { start = main },
-                onClick = onClearClick,
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Clear,
-                    contentDescription = stringResource(R.string.clear),
-                )
+            IconButton(onClick = onClearClick) {
+                Icon(Icons.Default.Clear, contentDescription = stringResource(R.string.mapping_clear_all))
             }
         }
     }
 }
 
 @Composable
-private fun WaitingForInputOverlay(onCancel: () -> Unit) {
+private fun BindingChip(label: String, sharedWith: List<String>, onRemove: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    Column {
+        Row(
+            modifier = Modifier
+                .border(1.dp, MaterialTheme.colors.onSurface.copy(alpha = 0.3f), shape)
+                .padding(start = 10.dp, end = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(label, style = MaterialTheme.typography.body2)
+            IconButton(onClick = onRemove, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = stringResource(R.string.mapping_remove_binding),
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+        if (sharedWith.isNotEmpty()) {
+            Text(
+                text = stringResource(R.string.mapping_already_used, sharedWith.joinToString(", ")),
+                style = MaterialTheme.typography.caption,
+                color = MaterialTheme.colors.onSurface.copy(alpha = ContentAlpha.medium),
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AddChip(onClick: () -> Unit, emphasized: Boolean) {
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        modifier = Modifier
+            .border(1.dp, MaterialTheme.colors.secondary.copy(alpha = if (emphasized) 0.9f else 0.5f), shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colors.secondary)
+        Spacer(Modifier.size(4.dp))
+        Text(
+            text = stringResource(if (emphasized) R.string.not_set else R.string.mapping_add_binding),
+            style = MaterialTheme.typography.body2,
+            color = MaterialTheme.colors.secondary,
+        )
+    }
+}
+
+private fun describeAssignment(assignment: InputConfig.Assignment): String {
+    return when (assignment) {
+        is InputConfig.Assignment.Key -> {
+            KeyEvent.keyCodeToString(assignment.keyCode).replace("KEYCODE", "").replace("_", " ").trim()
+        }
+        is InputConfig.Assignment.Axis -> {
+            val positive = assignment.direction == InputConfig.Assignment.Axis.Direction.POSITIVE
+            when (assignment.axisCode) {
+                MotionEvent.AXIS_X -> if (positive) "Left stick →" else "Left stick ←"
+                MotionEvent.AXIS_Y -> if (positive) "Left stick ↓" else "Left stick ↑"
+                MotionEvent.AXIS_Z -> if (positive) "Right stick →" else "Right stick ←"
+                MotionEvent.AXIS_RZ -> if (positive) "Right stick ↓" else "Right stick ↑"
+                MotionEvent.AXIS_HAT_X -> if (positive) "D-pad →" else "D-pad ←"
+                MotionEvent.AXIS_HAT_Y -> if (positive) "D-pad ↓" else "D-pad ↑"
+                MotionEvent.AXIS_LTRIGGER, MotionEvent.AXIS_BRAKE -> "Left trigger"
+                MotionEvent.AXIS_RTRIGGER, MotionEvent.AXIS_GAS -> "Right trigger"
+                else -> {
+                    val name = MotionEvent.axisToString(assignment.axisCode).removePrefix("AXIS_").replace("_", " ").trim()
+                    if (positive) "$name +" else "$name −"
+                }
+            }
+        }
+        InputConfig.Assignment.None -> ""
+    }
+}
+
+@Composable
+private fun WaitingForInputOverlay(inputName: String, onCancel: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colors.background.copy(alpha = 0.8f))
+            .background(MaterialTheme.colors.background.copy(alpha = 0.85f))
             .clickable(enabled = true, onClick = { })
     ) {
         Column(
-            modifier = Modifier.align(Alignment.Center),
+            modifier = Modifier.align(Alignment.Center).padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                text = stringResource(R.string.waiting_for_input),
-                style = MaterialTheme.typography.h6,
-            )
+            Text(text = inputName, style = MaterialTheme.typography.h6)
+            Spacer(Modifier.height(8.dp))
+            Text(text = stringResource(R.string.waiting_for_input), style = MaterialTheme.typography.body1)
             Spacer(Modifier.height(16.dp))
             TextButton(onClick = onCancel) {
                 Text(stringResource(android.R.string.cancel))
@@ -256,6 +401,10 @@ private fun getInputName(input: Input): String? {
         Input.QUICK_SAVE -> R.string.input_quick_save
         Input.QUICK_LOAD -> R.string.input_quick_load
         Input.REWIND -> R.string.rewind
+        Input.TOUCH_STICK_UP -> R.string.input_touch_stick_up
+        Input.TOUCH_STICK_DOWN -> R.string.input_touch_stick_down
+        Input.TOUCH_STICK_LEFT -> R.string.input_touch_stick_left
+        Input.TOUCH_STICK_RIGHT -> R.string.input_touch_stick_right
         else -> return null
     }
 
@@ -268,47 +417,18 @@ private fun PreviewInputSetupScreen() {
     MelonTheme {
         InputSetupScreenContent(
             inputConfig = listOf(
-                InputConfig(
-                    input = Input.A,
-                    assignment = InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_A),
-                ),
-                InputConfig(
-                    input = Input.B,
-                    assignment = InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_B),
-                ),
-                InputConfig(
-                    input = Input.X,
-                    assignment = InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_X),
-                ),
-                InputConfig(
-                    input = Input.Y,
-                    assignment = InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_Y),
-                ),
-                InputConfig(
-                    input = Input.UP,
-                    assignment = InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_DPAD_UP),
-                    altAssignment = InputConfig.Assignment.Axis(null, MotionEvent.AXIS_Y, InputConfig.Assignment.Axis.Direction.NEGATIVE),
-                ),
-                InputConfig(
-                    input = Input.DOWN,
-                    assignment = InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_DPAD_DOWN),
-                    altAssignment = InputConfig.Assignment.Axis(null, MotionEvent.AXIS_Y, InputConfig.Assignment.Axis.Direction.POSITIVE),
-                ),
-                InputConfig(
-                    input = Input.LEFT,
-                    assignment = InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_DPAD_LEFT),
-                    altAssignment = InputConfig.Assignment.Axis(null, MotionEvent.AXIS_X, InputConfig.Assignment.Axis.Direction.NEGATIVE),
-                ),
-                InputConfig(
-                    input = Input.RIGHT,
-                    assignment = InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_DPAD_RIGHT),
-                    altAssignment = InputConfig.Assignment.Axis(null, MotionEvent.AXIS_X, InputConfig.Assignment.Axis.Direction.POSITIVE),
-                ),
+                InputConfig(Input.A, listOf(InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_BUTTON_B), InputConfig.Assignment.Axis(null, MotionEvent.AXIS_Z, InputConfig.Assignment.Axis.Direction.POSITIVE))),
+                InputConfig(Input.B, InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_BUTTON_A)),
+                InputConfig(Input.X),
+                InputConfig(Input.TOUCH_STICK_RIGHT, InputConfig.Assignment.Axis(null, MotionEvent.AXIS_Z, InputConfig.Assignment.Axis.Direction.POSITIVE)),
+                InputConfig(Input.PAUSE, InputConfig.Assignment.Key(null, KeyEvent.KEYCODE_BUTTON_MODE)),
             ),
-            inputUnderConfiguration = Input.B,
+            inputUnderConfiguration = null,
             onInputAssignedEvent = emptyFlow(),
             onInputClick = { },
+            onRemoveAssignment = { _, _ -> },
             onClearInputClick = { },
+            onResetDefaults = { },
             onCancelInputConfiguration = { },
             onBackClick = { },
         )

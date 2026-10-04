@@ -32,6 +32,7 @@ import me.magnum.melonds.domain.model.AudioInterpolation
 import me.magnum.melonds.domain.model.AudioLatency
 import me.magnum.melonds.domain.model.ConsoleType
 import me.magnum.melonds.domain.model.ControllerConfiguration
+import me.magnum.melonds.domain.model.TouchStickSettings
 import me.magnum.melonds.domain.model.EmulatorConfiguration
 import me.magnum.melonds.domain.model.FirmwareConfiguration
 import me.magnum.melonds.domain.model.FpsCounterPosition
@@ -440,6 +441,26 @@ class SharedPreferencesSettingsRepository(
         return rom.parentTreeUri?.let {
             uriHandler.getUriTreeDocument(rom.parentTreeUri)?.uri
         } ?: throw Exception("Could not determine ROMs parent document")
+    }
+
+    override fun getTouchStickSettings(): TouchStickSettings {
+        val defaults = TouchStickSettings()
+        val mode = when (preferences.getString("touch_stick_mode", "off")) {
+            "joystick" -> TouchStickSettings.Mode.JOYSTICK
+            "camera" -> TouchStickSettings.Mode.CAMERA
+            else -> TouchStickSettings.Mode.OFF
+        }
+        return TouchStickSettings(
+            mode = mode,
+            centerX = preferences.getInt("touch_stick_center_x", defaults.centerX).coerceIn(0, 255),
+            centerY = preferences.getInt("touch_stick_center_y", defaults.centerY).coerceIn(0, 191),
+            radius = preferences.getInt("touch_stick_radius", defaults.radius).coerceIn(4, 128),
+            speed = preferences.getInt("touch_stick_speed", defaults.speed).coerceIn(20, 3000),
+            recenterDistance = preferences.getInt("touch_stick_recenter", defaults.recenterDistance).coerceIn(8, 128),
+            deadzone = preferences.getInt("touch_stick_deadzone", (defaults.deadzone * 100).toInt()).coerceIn(0, 90) / 100f,
+            invertX = preferences.getBoolean("touch_stick_invert_x", defaults.invertX),
+            invertY = preferences.getBoolean("touch_stick_invert_y", defaults.invertY),
+        )
     }
 
     override fun getControllerConfiguration(): ControllerConfiguration {

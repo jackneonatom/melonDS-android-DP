@@ -32,12 +32,20 @@ enum class Input(val keyCode: Int) {
     SWAP_SCREENS(-1),
     QUICK_SAVE(-1),
     QUICK_LOAD(-1),
-    REWIND(-1);
+    REWIND(-1),
+
+    // Analog stick -> touchscreen (see TouchStickMapper). These are mapped like any other
+    // control, so the "touch stick" can be driven by the right stick, the left stick or buttons.
+    TOUCH_STICK_UP(-1),
+    TOUCH_STICK_DOWN(-1),
+    TOUCH_STICK_LEFT(-1),
+    TOUCH_STICK_RIGHT(-1);
 
     val isSystemInput: Boolean
         get() = keyCode != -1
 
     companion object {
         val SYSTEM_BUTTONS = listOf(A, B, X, Y, L, R, START, SELECT, LEFT, RIGHT, UP, DOWN)
+        val TOUCH_STICK_DIRECTIONS = listOf(TOUCH_STICK_UP, TOUCH_STICK_DOWN, TOUCH_STICK_LEFT, TOUCH_STICK_RIGHT)
     }
 }

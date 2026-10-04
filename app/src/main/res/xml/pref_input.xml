@@ -49,4 +49,95 @@
             app:iconSpaceReserved="false"
             android:defaultValue="50"
             android:max="100" />
+
+    <PreferenceCategory
+        android:key="touch_stick_category"
+        android:title="@string/touch_stick_category"
+        app:iconSpaceReserved="false">
+
+        <ListPreference
+            android:key="touch_stick_mode"
+            android:title="@string/touch_stick_mode"
+            android:summary="%s"
+            android:entries="@array/touch_stick_mode_options"
+            android:entryValues="@array/touch_stick_mode_values"
+            android:defaultValue="off"
+            app:iconSpaceReserved="false" />
+
+        <Preference
+            android:key="touch_stick_info"
+            android:summary="@string/touch_stick_info"
+            android:selectable="false"
+            app:iconSpaceReserved="false" />
+
+        <SeekBarPreference
+            android:key="touch_stick_center_x"
+            android:title="@string/touch_stick_center_x"
+            android:defaultValue="128"
+            android:max="255"
+            app:min="0"
+            app:showSeekBarValue="true"
+            app:iconSpaceReserved="false" />
+
+        <SeekBarPreference
+            android:key="touch_stick_center_y"
+            android:title="@string/touch_stick_center_y"
+            android:defaultValue="96"
+            android:max="191"
+            app:min="0"
+            app:showSeekBarValue="true"
+            app:iconSpaceReserved="false" />
+
+        <SeekBarPreference
+            android:key="touch_stick_radius"
+            android:title="@string/touch_stick_radius"
+            android:summary="@string/touch_stick_radius_summary"
+            android:defaultValue="64"
+            android:max="128"
+            app:min="4"
+            app:showSeekBarValue="true"
+            app:iconSpaceReserved="false" />
+
+        <SeekBarPreference
+            android:key="touch_stick_speed"
+            android:title="@string/touch_stick_speed"
+            android:summary="@string/touch_stick_speed_summary"
+            android:defaultValue="500"
+            android:max="2000"
+            app:min="50"
+            app:seekBarIncrement="10"
+            app:showSeekBarValue="true"
+            app:iconSpaceReserved="false" />
+
+        <SeekBarPreference
+            android:key="touch_stick_recenter"
+            android:title="@string/touch_stick_recenter"
+            android:summary="@string/touch_stick_recenter_summary"
+            android:defaultValue="56"
+            android:max="128"
+            app:min="8"
+            app:showSeekBarValue="true"
+            app:iconSpaceReserved="false" />
+
+        <SeekBarPreference
+            android:key="touch_stick_deadzone"
+            android:title="@string/touch_stick_deadzone"
+            android:defaultValue="15"
+            android:max="90"
+            app:min="0"
+            app:showSeekBarValue="true"
+            app:iconSpaceReserved="false" />
+
+        <SwitchPreference
+            android:key="touch_stick_invert_x"
+            android:title="@string/touch_stick_invert_x"
+            android:defaultValue="false"
+            app:iconSpaceReserved="false" />
+
+        <SwitchPreference
+            android:key="touch_stick_invert_y"
+            android:title="@string/touch_stick_invert_y"
+            android:defaultValue="false"
+            app:iconSpaceReserved="false" />
+    </PreferenceCategory>
 </PreferenceScreen>

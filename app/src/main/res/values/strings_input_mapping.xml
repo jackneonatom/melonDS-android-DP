@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Analog stick -> touchscreen -->
+    <string name="touch_stick_category">Analog stick → touchscreen</string>
+    <string name="touch_stick_mode">Mode</string>
+    <string name="touch_stick_info">Uses the "Touch stick" controls from Key mapping, which are set to the right stick by default. You can bind them to any stick or buttons there.</string>
+    <string name="touch_stick_center_x">Center X (0–255)</string>
+    <string name="touch_stick_center_y">Center Y (0–191)</string>
+    <string name="touch_stick_radius">Joystick: reach</string>
+    <string name="touch_stick_radius_summary">How far the touch moves from the center at full tilt</string>
+    <string name="touch_stick_speed">Camera: speed</string>
+    <string name="touch_stick_speed_summary">How fast the touch drags at full tilt (pixels per second)</string>
+    <string name="touch_stick_recenter">Camera: re-center after</string>
+    <string name="touch_stick_recenter_summary">Distance the touch may drag before it lifts and starts again from the center</string>
+    <string name="touch_stick_deadzone">Deadzone (%)</string>
+    <string name="touch_stick_invert_x">Invert horizontal</string>
+    <string name="touch_stick_invert_y">Invert vertical</string>
+
+    <string-array name="touch_stick_mode_options">
+        <item>Off</item>
+        <item>Joystick (on-screen stick or d-pad)</item>
+        <item>Camera / FPS (drag to aim or look)</item>
+    </string-array>
+    <string-array name="touch_stick_mode_values" translatable="false">
+        <item>off</item>
+        <item>joystick</item>
+        <item>camera</item>
+    </string-array>
+
+    <!-- Key mapping -->
+    <string name="input_touch_stick_up">Touch stick up</string>
+    <string name="input_touch_stick_down">Touch stick down</string>
+    <string name="input_touch_stick_left">Touch stick left</string>
+    <string name="input_touch_stick_right">Touch stick right</string>
+    <string name="mapping_section_ds">DS controls</string>
+    <string name="mapping_section_touch_stick">Touch stick (analog → touchscreen)</string>
+    <string name="mapping_section_emulator">Emulator</string>
+    <string name="mapping_add_binding">Add</string>
+    <string name="mapping_remove_binding">Remove binding</string>
+    <string name="mapping_clear_all">Clear all</string>
+    <string name="mapping_reset_defaults">Reset to defaults</string>
+    <string name="mapping_reset_defaults_confirm">Replace all key mappings with the defaults?</string>
+    <string name="mapping_help">Tap a control to add a button or stick direction. A control can have several bindings, and one button can drive several controls.</string>
+    <string name="mapping_already_used">Also bound to: %1$s</string>
+</resources>

@@ -93,10 +93,7 @@ class ConnectedControllerManager : InputManager.InputDeviceListener {
             } else {
                 if (areSystemButtonsHandledByConnectedControllers(managedControllers, controllerConfiguration)) {
                     val assignedInputs = controllerConfiguration.inputMapper.filter {
-                        val controllerAssignments = listOfNotNull(
-                            it.assignment.takeUnless { it == InputConfig.Assignment.None },
-                            it.altAssignment.takeUnless { it == InputConfig.Assignment.None },
-                        )
+                        val controllerAssignments = it.assignments
                         controllerAssignments.any { assignment ->
                             when(assignment) {
                                 is InputConfig.Assignment.Axis -> managedControllers.any { it.getMotionRange(assignment.axisCode) != null }

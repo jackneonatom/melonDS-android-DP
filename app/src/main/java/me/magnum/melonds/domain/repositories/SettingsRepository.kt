@@ -61,6 +61,7 @@ interface SettingsRepository {
     fun getSoftInputBehaviour(): Flow<SoftInputBehaviour>
     fun isTouchHapticFeedbackEnabled(): Flow<Boolean>
     fun getTouchHapticFeedbackStrength(): Int
+    fun getTouchStickSettings(): TouchStickSettings
     fun getSoftInputOpacity(): Flow<Int>
 
     fun isRetroAchievementsRichPresenceEnabled(): Boolean

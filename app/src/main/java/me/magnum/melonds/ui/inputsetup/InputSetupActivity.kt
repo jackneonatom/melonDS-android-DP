@@ -26,7 +26,13 @@ class InputSetupActivity : AppCompatActivity() {
 
     private val viewModel: InputSetupViewModel by viewModels()
 
-    private val referenceAxisValues = mutableMapOf<Int, Float>()
+    /**
+     * Per axis, what we've seen since the current assignment started: the first value and whether it
+     * has changed since. An axis that reads fully pegged and never moves is most likely a trigger
+     * that rests at -1 on that controller, not something the user is pushing.
+     */
+    private class AxisObservation(val firstValue: Float, var changed: Boolean = false)
+    private val observedAxes = mutableMapOf<Int, AxisObservation>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT))
@@ -45,15 +51,8 @@ class InputSetupActivity : AppCompatActivity() {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.inputUnderAssignment.collect {
                     if (it != null) {
-                        // A new assignment has started. Reset reference values
-                        referenceAxisValues.clear()
-                        InputDevice.getDeviceIds().forEach { deviceId ->
-                            InputDevice.getDevice(deviceId)?.motionRanges?.forEach { range ->
-                                if (range.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK)) {
-                                    referenceAxisValues[range.axis] = 0f
-                                }
-                            }
-                        }
+                        // a new assignment has started
+                        observedAxes.clear()
                     }
                 }
             }
@@ -63,26 +62,35 @@ class InputSetupActivity : AppCompatActivity() {
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         if (viewModel.inputUnderAssignment.value != null && event.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK)) {
             if (event.action == MotionEvent.ACTION_MOVE) {
-                val detectedAxis = referenceAxisValues.firstNotNullOfOrNull {
-                    val currentValue = event.getAxisValue(it.key)
-                    val delta = (currentValue - it.value).absoluteValue
-                    if (delta >= 0.5f) {
-                        it.key
-                    } else {
-                        null
+                val axes = event.device?.motionRanges
+                    ?.filter { it.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK) }
+                    ?.map { it.axis }
+                    ?.distinct()
+                    .orEmpty()
+
+                var bestAxis = -1
+                var bestValue = 0f
+                axes.forEach { axis ->
+                    val value = event.getAxisValue(axis)
+                    val observation = observedAxes.getOrPut(axis) { AxisObservation(value) }
+                    if ((value - observation.firstValue).absoluteValue > 0.05f) {
+                        observation.changed = true
+                    }
+
+                    val restingPegged = !observation.changed && observation.firstValue.absoluteValue >= 0.9f
+                    if (value.absoluteValue >= 0.5f && !restingPegged && value.absoluteValue > bestValue.absoluteValue) {
+                        bestAxis = axis
+                        bestValue = value
                     }
                 }
 
-                if (detectedAxis != null) {
-                    val initialValue = referenceAxisValues[detectedAxis]!!
-                    val currentValue = event.getAxisValue(detectedAxis)
-                    val delta = currentValue - initialValue
-                    val direction = if (delta > 0f) {
+                if (bestAxis >= 0) {
+                    val direction = if (bestValue > 0f) {
                         InputConfig.Assignment.Axis.Direction.POSITIVE
                     } else {
                         InputConfig.Assignment.Axis.Direction.NEGATIVE
                     }
-                    viewModel.updateInputAssignedAxis(detectedAxis, direction)
+                    viewModel.updateInputAssignedAxis(bestAxis, direction)
                 }
                 return true
             }

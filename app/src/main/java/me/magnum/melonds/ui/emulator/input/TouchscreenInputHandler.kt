@@ -15,13 +15,15 @@ class TouchscreenInputHandler(inputListener: IInputListener) : BaseInputHandler(
     override fun onTouch(v: View, event: MotionEvent): Boolean {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
+                TouchStickController.FingerState.touching = true
                 inputListener.onKeyPress(Input.TOUCHSCREEN)
                 inputListener.onTouch(normalizeTouchCoordinates(event, v.width, v.height))
             }
             MotionEvent.ACTION_MOVE -> {
                 inputListener.onTouch(normalizeTouchCoordinates(event, v.width, v.height))
             }
-            MotionEvent.ACTION_UP -> {
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                TouchStickController.FingerState.touching = false
                 inputListener.onKeyReleased(Input.TOUCHSCREEN)
                 onScreenRelease()
             }

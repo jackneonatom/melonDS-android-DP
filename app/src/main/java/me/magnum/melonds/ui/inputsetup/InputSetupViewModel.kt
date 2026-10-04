@@ -5,16 +5,23 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import me.magnum.melonds.domain.model.ControllerConfiguration
 import me.magnum.melonds.domain.model.Input
 import me.magnum.melonds.domain.model.InputConfig
 import me.magnum.melonds.domain.repositories.SettingsRepository
+import me.magnum.melonds.impl.input.ControllerConfigurationFactory
 import me.magnum.melonds.utils.EventSharedFlow
 import javax.inject.Inject
 
+/**
+ * Key mapping. Each control can have any number of bindings, and a physical input may be bound to
+ * several controls (many-to-many, like PPSSPP).
+ */
 @HiltViewModel
-class InputSetupViewModel @Inject constructor(private val settingsRepository: SettingsRepository) : ViewModel() {
+class InputSetupViewModel @Inject constructor(
+    private val settingsRepository: SettingsRepository,
+    private val controllerConfigurationFactory: ControllerConfigurationFactory,
+) : ViewModel() {
 
     private val _inputConfig = MutableStateFlow(settingsRepository.getControllerConfiguration().inputMapper)
     val inputConfiguration = _inputConfig.asStateFlow()
@@ -34,68 +41,55 @@ class InputSetupViewModel @Inject constructor(private val settingsRepository: Se
     }
 
     fun updateInputAssignedKey(key: Int) {
-        val inputUnderAssignment = _inputUnderAssignment.value ?: return
-        val inputType = InputConfig.Assignment.Key(null, key)
-        setInputAssignment(inputUnderAssignment, inputType)
-        focusOnNextInput(inputUnderAssignment)
+        addAssignment(InputConfig.Assignment.Key(null, key))
     }
 
     fun updateInputAssignedAxis(axis: Int, direction: InputConfig.Assignment.Axis.Direction) {
-        val inputUnderAssignment = _inputUnderAssignment.value ?: return
-        val inputType = InputConfig.Assignment.Axis(null, axis, direction)
-        setInputAssignment(inputUnderAssignment, inputType)
-        focusOnNextInput(inputUnderAssignment)
+        addAssignment(InputConfig.Assignment.Axis(null, axis, direction))
+    }
+
+    fun removeAssignment(input: Input, assignment: InputConfig.Assignment) {
+        updateConfig(input) { it.withoutAssignment(assignment) }
     }
 
     fun clearInputAssignment(input: Input) {
-        setInputAssignment(input, InputConfig.Assignment.None)
+        updateConfig(input) { it.copy(assignments = emptyList()) }
         _inputUnderAssignment.value = null
     }
 
-    private fun setInputAssignment(input: Input, assignment: InputConfig.Assignment) {
-        val inputIndex = _inputConfig.value.indexOfFirst { it.input == input }
-        if (inputIndex >= 0) {
-            _inputConfig.update { config ->
-                config.toMutableList().apply {
-                    val current = this[inputIndex]
-                    var primary = current.assignment
-                    var secondary = current.altAssignment
-                    when (assignment) {
-                        InputConfig.Assignment.None -> {
-                            primary = InputConfig.Assignment.None
-                            secondary = InputConfig.Assignment.None
-                        }
-                        is InputConfig.Assignment.Key -> {
-                            if (primary == InputConfig.Assignment.None || primary == assignment) {
-                                primary = assignment
-                            } else if (secondary == InputConfig.Assignment.None || secondary == assignment) {
-                                secondary = assignment
-                            } else {
-                                secondary = assignment
-                            }
-                        }
-                        is InputConfig.Assignment.Axis -> {
-                            if (primary == InputConfig.Assignment.None|| primary == assignment) {
-                                primary = assignment
-                            } else if (secondary == InputConfig.Assignment.None || secondary == assignment) {
-                                secondary = assignment
-                            } else {
-                                secondary = assignment
-                            }
-                        }
-                    }
-                    this[inputIndex] = current.copy(assignment = primary, altAssignment = secondary)
-                }.also {
-                    onConfigsChanged(it)
-                }
-            }
+    fun resetToDefaults() {
+        _inputUnderAssignment.value = null
+        val defaults = controllerConfigurationFactory.buildDefaultControllerConfiguration()
+        _inputConfig.value = defaults.inputMapper
+        settingsRepository.setControllerConfiguration(defaults)
+    }
+
+    /** Other controls the same physical input is bound to (it's allowed, but worth showing). */
+    fun otherInputsBoundTo(assignment: InputConfig.Assignment, except: Input): List<Input> {
+        return _inputConfig.value.filter { it.input != except && assignment in it.assignments }.map { it.input }
+    }
+
+    private fun addAssignment(assignment: InputConfig.Assignment) {
+        val input = _inputUnderAssignment.value ?: return
+        val wasEmpty = _inputConfig.value.firstOrNull { it.input == input }?.hasKeyAssigned() != true
+        updateConfig(input) { it.withAssignment(assignment) }
+        _inputUnderAssignment.value = null
+
+        // When filling in an empty control, move on to the next one, so a whole controller can be set
+        // up quickly. Adding an extra binding to a control stays put.
+        if (wasEmpty) {
+            focusOnNextInput(input)
         }
-        _inputUnderAssignment.value = null
     }
 
-    private fun onConfigsChanged(newConfig: List<InputConfig>) {
-        val currentConfiguration = ControllerConfiguration(newConfig)
-        settingsRepository.setControllerConfiguration(currentConfiguration)
+    private fun updateConfig(input: Input, change: (InputConfig) -> InputConfig) {
+        val current = _inputConfig.value
+        val index = current.indexOfFirst { it.input == input }
+        if (index < 0) return
+
+        val updated = current.toMutableList().apply { this[index] = change(this[index]) }
+        _inputConfig.value = updated
+        settingsRepository.setControllerConfiguration(ControllerConfiguration(updated))
     }
 
     private fun focusOnNextInput(currentInput: Input) {
