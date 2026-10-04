@@ -1,0 +1,679 @@
+From b4ba1f0a9a63eabfd2f24ea4829864157e8704b6 Mon Sep 17 00:00:00 2001
+From: melonDS Wi-Fi LAN <rickandmotyc137@gmail.com>
+Date: Sat, 3 Oct 2026 20:26:43 -0500
+Subject: [PATCH 1/2] LAN: make local multiplayer survive Wi-Fi and phone
+ hotspots
+
+- Disable ENet's packet throttle on every peer. It randomly discards
+  unreliable packets whenever RTT rises, and all DS wireless frames are
+  sent unreliable, so every Wi-Fi latency bump dropped MP frames. This
+  alone took replies missed on a clean link from ~2.5% to 0.
+- Adaptive receive wait: derive the reply deadline from measured
+  CMD->reply exchange times (RFC 6298 style) and ENet RTT, clamped to
+  [MinTimeout, MaxTimeout], with a decaying backoff after timeouts.
+  The deadline now covers the whole exchange instead of each packet.
+- Honour MPInterface::RecvTimeout (the "receive timeout" setting) as the
+  lower bound; previously LAN mode ignored it and always used 25ms.
+- Stale-packet window scales with the wait instead of a fixed 16ms.
+- Optional redundant MP frames, sent only to peers that advertise
+  duplicate filtering through a new Cmd_Caps (0x40) control command.
+  Older versions ignore unknown commands, so the protocol stays
+  compatible in both directions.
+- Discovery beacons also go to each interface's broadcast address, so
+  a device acting as a Wi-Fi hotspot can be found by its clients.
+- Expose tuning (SetTuning) and live stats (GetStats).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013NwZqgQSwwvXin9eSMf3Cf
+---
+ src/net/LAN.cpp | 367 ++++++++++++++++++++++++++++++++++++++++++++++--
+ src/net/LAN.h   |  55 +++++++-
+ 2 files changed, 409 insertions(+), 13 deletions(-)
+
+diff --git a/src/net/LAN.cpp b/src/net/LAN.cpp
+index 0f43803..c88fc69 100644
+--- a/src/net/LAN.cpp
++++ b/src/net/LAN.cpp
+@@ -18,6 +18,7 @@
+ 
+ #include <stdio.h>
+ #include <string.h>
++#include <algorithm>
+ 
+ #ifdef __WIN32__
+     #include <winsock2.h>
+@@ -31,6 +32,8 @@
+     #include <netinet/in.h>
+     #include <sys/select.h>
+     #include <sys/socket.h>
++    #include <ifaddrs.h>
++    #include <net/if.h>
+ 
+     #define socket_t    int
+     #define sockaddr_t  struct sockaddr
+@@ -69,8 +72,45 @@ enum
+     Cmd_PlayerList,         // 03 -- host->client -- broadcast updated player list
+     Cmd_PlayerConnect,      // 04 -- both -- signal connected state (ready to receive MP frames)
+     Cmd_PlayerDisconnect,   // 05 -- both -- signal disconnected state (not receiving MP frames)
++
++    // extension commands -- older melonDS versions silently ignore unknown commands,
++    // so these keep the wire protocol compatible in both directions
++    Cmd_Caps = 0x40,        // 40 -- both -- advertise optional capabilities to a peer
+ };
+ 
++const u32 kCapsMagic = 0x53504143; // CAPS
++const u32 kCapsVersion = 1;
++
++enum
++{
++    Cap_Dedupe = (1 << 0),  // peer discards duplicate MP frames, so it's safe to send redundant copies
++};
++
++// ENet's congestion throttle randomly drops *unreliable* packets whenever the
++// round-trip time rises above its recent average. All DS wireless frames are sent
++// unreliable, so on Wi-Fi every latency bump made ENet discard MP frames -- exactly
++// when the link is most fragile -- and the game saw that as missed replies.
++// Pin the throttle fully open. This also sends a THROTTLE_CONFIGURE command so the
++// remote end stops throttling toward us, even if it runs an older melonDS.
++static void DisableThrottle(ENetPeer* peer)
++{
++    enet_peer_throttle_configure(peer, ENET_PEER_PACKET_THROTTLE_INTERVAL,
++                                 ENET_PEER_PACKET_THROTTLE_SCALE, 0);
++    peer->packetThrottle = ENET_PEER_PACKET_THROTTLE_SCALE;
++}
++
++static u32 HashBytes(const u8* data, size_t len)
++{
++    // FNV-1a
++    u32 h = 0x811C9DC5;
++    for (size_t i = 0; i < len; i++)
++    {
++        h ^= data[i];
++        h *= 0x01000193;
++    }
++    return h;
++}
++
+ const int kDiscoveryPort = 7063;
+ const int kLANPort = 7064;
+ 
+@@ -101,6 +141,11 @@ LAN::LAN() noexcept : Inited(false)
+ 
+     FrameCount = 0;
+ 
++    memset(PeerCaps, 0, sizeof(PeerCaps));
++    memset(Seen, 0, sizeof(Seen));
++    SeenPos = 0;
++    ResetStats();
++
+     // TODO make this somewhat nicer
+     if (enet_initialize() != 0)
+     {
+@@ -165,6 +210,237 @@ std::vector<LAN::Player> LAN::GetPlayerList()
+ }
+ 
+ 
++void LAN::SetTuning(const Tuning& tuning)
++{
++    Tune = tuning;
++    if (Tune.MinTimeout < 1) Tune.MinTimeout = 1;
++    if (Tune.MaxTimeout < Tune.MinTimeout) Tune.MaxTimeout = Tune.MinTimeout;
++    if (Tune.MaxTimeout > 1000) Tune.MaxTimeout = 1000;
++    // the new values take effect on the next Process() call, on the emulator thread
++}
++
++LAN::Stats LAN::GetStats()
++{
++    Platform::Mutex_Lock(PlayersMutex);
++    Stats ret = St;
++    Platform::Mutex_Unlock(PlayersMutex);
++    return ret;
++}
++
++void LAN::ResetStats()
++{
++    memset(&St, 0, sizeof(St));
++    SRTTus = 0;
++    RTTVarus = 0;
++    BackoffMs = 0;
++    WindowMaxMs = 0;
++    WindowStartMs = (u32)Platform::GetMSCount();
++    MPRecvTimeout = std::max(RecvTimeout, Tune.MinTimeout);
++    St.CurrentTimeoutMs = MPRecvTimeout;
++}
++
++// Pick how long to block waiting for MP frames.
++// melonDS keeps every DS in lockstep on emulated time, so waiting longer never
++// desyncs anything -- it only stalls emulation briefly. Giving up too early, on
++// the other hand, makes the game see a missed reply; enough of those in a row
++// and it shows "communication error". So on jittery links we want the wait to
++// cover the realistic worst case, but not much more (a client that really is
++// gone would otherwise slow the host down).
++void LAN::UpdateTimeout()
++{
++    int floor = std::max(RecvTimeout, Tune.MinTimeout);
++    int ceil = std::max(floor, Tune.MaxTimeout);
++    int timeout = floor;
++
++    if (Tune.Adaptive)
++    {
++        // estimate from measured CMD->reply exchanges (RFC 6298 style)
++        int fromexch = 0;
++        if (SRTTus > 0)
++            fromexch = (int)((SRTTus + 4 * RTTVarus) / 1000) + 10;
++
++        // estimate from ENet's own RTT, which is available before the first exchange
++        int maxping = 0;
++        for (int i = 0; i < 16; i++)
++        {
++            if (i == MyPlayer.ID) continue;
++            if (!RemotePeers[i]) continue;
++            if (!(ConnectedBitmask & (1 << i))) continue;
++            int ping = (int)(RemotePeers[i]->roundTripTime + 4 * RemotePeers[i]->roundTripTimeVariance);
++            maxping = std::max(maxping, ping);
++        }
++        int fromping = maxping ? (maxping + 10) : 0;
++
++        timeout = std::max({fromexch, fromping, BackoffMs});
++        timeout = std::clamp(timeout, floor, ceil);
++    }
++
++    MPRecvTimeout = timeout;
++    St.CurrentTimeoutMs = timeout;
++}
++
++void LAN::RecordExchange(u64 us, bool complete)
++{
++    Platform::Mutex_Lock(PlayersMutex);
++
++    if (complete)
++    {
++        s64 sample = (s64)us;
++        if (SRTTus == 0)
++        {
++            SRTTus = sample;
++            RTTVarus = sample / 2;
++        }
++        else
++        {
++            s64 err = sample - SRTTus;
++            SRTTus += err / 8;
++            RTTVarus += ((err < 0 ? -err : err) - RTTVarus) / 4;
++        }
++        St.Exchanges++;
++        St.AvgExchangeUs = (u32)SRTTus;
++
++        // successful rounds let a previous backoff fade out (halves in ~5 rounds)
++        BackoffMs -= (BackoffMs + 7) / 8;
++    }
++    else
++    {
++        // a reply didn't make it in time: the link may be in a latency spike, so
++        // wait longer next time. Kept separate from the latency estimate so that
++        // timeouts can't feed back into it and pin the wait at the ceiling.
++        St.ReplyTimeouts++;
++        BackoffMs = std::max(BackoffMs, MPRecvTimeout + MPRecvTimeout / 2);
++    }
++
++    u32 ms = (u32)(us / 1000);
++    if (ms > WindowMaxMs) WindowMaxMs = ms;
++
++    Platform::Mutex_Unlock(PlayersMutex);
++
++    UpdateTimeout();
++}
++
++bool LAN::IsDuplicate(const ENetPacket* pkt)
++{
++    const MPPacketHeader* header = (const MPPacketHeader*)&pkt->data[0];
++
++    SeenKey key;
++    key.Sender = header->SenderID;
++    key.Type = header->Type;
++    key.Len = header->Length;
++    key.Timestamp = header->Timestamp;
++    key.Hash = HashBytes(&pkt->data[sizeof(MPPacketHeader)], pkt->dataLength - sizeof(MPPacketHeader));
++
++    for (int i = 0; i < 64; i++)
++    {
++        const SeenKey& s = Seen[i];
++        if (s.Sender == key.Sender && s.Type == key.Type && s.Len == key.Len &&
++            s.Timestamp == key.Timestamp && s.Hash == key.Hash)
++            return true;
++    }
++
++    Seen[SeenPos] = key;
++    SeenPos = (SeenPos + 1) & 63;
++    return false;
++}
++
++// Send to every connected peer. Peers that told us they discard duplicates get a
++// second copy, which hides single-packet losses without waiting for a timeout.
++void LAN::SendToPeers(ENetPacket* pkt, u8 channel, bool redundant)
++{
++    for (ENetPeer* peer = Host->peers; peer < &Host->peers[Host->peerCount]; peer++)
++    {
++        if (peer->state != ENET_PEER_STATE_CONNECTED) continue;
++
++        enet_peer_send(peer, channel, pkt);
++
++        if (!redundant) continue;
++        Player* player = (Player*)peer->data;
++        if (!player) continue;
++        if (!(PeerCaps[player->ID & 0xF] & Cap_Dedupe)) continue;
++
++        ENetPacket* copy = enet_packet_create(pkt->data, pkt->dataLength, pkt->flags);
++        enet_peer_send(peer, channel, copy);
++        St.RedundantSent++;
++    }
++
++    // enet_peer_send() takes its own reference; free it if nobody did
++    if (pkt->referenceCount == 0)
++        enet_packet_destroy(pkt);
++}
++
++void LAN::SendCaps(ENetPeer* peer)
++{
++    u8 cmd[13];
++    u32 flags = Cap_Dedupe;
++    cmd[0] = Cmd_Caps;
++    for (int i = 0; i < 4; i++)
++    {
++        cmd[1+i] = (u8)(kCapsMagic >> (8*i));
++        cmd[5+i] = (u8)(kCapsVersion >> (8*i));
++        cmd[9+i] = (u8)(flags >> (8*i));
++    }
++    ENetPacket* pkt = enet_packet_create(cmd, sizeof(cmd), ENET_PACKET_FLAG_RELIABLE);
++    enet_peer_send(peer, Chan_Cmd, pkt);
++}
++
++void LAN::HandleCaps(ENetPeer* peer, const u8* data, size_t len)
++{
++    if (len < 13) return;
++    u32 magic = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
++    if (magic != kCapsMagic) return;
++    u32 flags = data[9] | (data[10] << 8) | (data[11] << 16) | ((u32)data[12] << 24);
++
++    Player* player = (Player*)peer->data;
++    if (!player) return;
++
++    int id = player->ID & 0xF;
++    PeerCaps[id] = flags;
++
++    Platform::Mutex_Lock(PlayersMutex);
++    if (flags & Cap_Dedupe) St.RedundantPeers |= (1 << id);
++    else St.RedundantPeers &= ~(1 << id);
++    Platform::Mutex_Unlock(PlayersMutex);
++}
++
++// Send a discovery beacon. The limited broadcast address (255.255.255.255) is
++// routed through the default interface only -- on a phone acting as a Wi-Fi
++// hotspot that is usually the cellular link, so clients on the hotspot never
++// see the beacon. Also send to each interface's own broadcast address.
++void LAN::BroadcastDiscovery(const void* data, int len)
++{
++    sockaddr_in_t saddr;
++    memset(&saddr, 0, sizeof(saddr));
++    saddr.sin_family = AF_INET;
++    saddr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
++    saddr.sin_port = htons(kDiscoveryPort);
++    sendto(DiscoverySocket, (const char*)data, len, 0, (const sockaddr_t*)&saddr, sizeof(saddr));
++
++#ifndef __WIN32__
++    struct ifaddrs* ifs = nullptr;
++    if (getifaddrs(&ifs) != 0) return;
++
++    for (struct ifaddrs* ifa = ifs; ifa; ifa = ifa->ifa_next)
++    {
++        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
++        if (!(ifa->ifa_flags & IFF_UP)) continue;
++        if (ifa->ifa_flags & IFF_LOOPBACK) continue;
++        if (!(ifa->ifa_flags & IFF_BROADCAST)) continue;
++        if (!ifa->ifa_broadaddr) continue;
++
++        struct sockaddr_in baddr = *(struct sockaddr_in*)ifa->ifa_broadaddr;
++        if (baddr.sin_addr.s_addr == htonl(INADDR_BROADCAST)) continue;
++        if (baddr.sin_addr.s_addr == 0) continue;
++        baddr.sin_family = AF_INET;
++        baddr.sin_port = htons(kDiscoveryPort);
++
++        sendto(DiscoverySocket, (const char*)data, len, 0, (const sockaddr_t*)&baddr, sizeof(baddr));
++    }
++
++    freeifaddrs(ifs);
++#endif
++}
++
+ bool LAN::StartDiscovery()
+ {
+     if (!Inited) return false;
+@@ -254,6 +530,10 @@ bool LAN::StartHost(const char* playername, int numplayers)
+     LastHostID = -1;
+     LastHostPeer = nullptr;
+ 
++    memset(PeerCaps, 0, sizeof(PeerCaps));
++    memset(Seen, 0, sizeof(Seen));
++    ResetStats();
++
+     Active = true;
+     IsHost = true;
+ 
+@@ -306,6 +586,7 @@ bool LAN::StartClient(const char* playername, const char* host)
+         {
+             if (conn == 0 && event.type == ENET_EVENT_TYPE_CONNECT)
+             {
++                DisableThrottle(event.peer);
+                 conn = 1;
+             }
+             else if (conn == 1 && event.type == ENET_EVENT_TYPE_RECEIVE)
+@@ -366,6 +647,11 @@ bool LAN::StartClient(const char* playername, const char* host)
+     RemotePeers[0] = peer;
+     peer->data = &Players[0];
+ 
++    memset(PeerCaps, 0, sizeof(PeerCaps));
++    memset(Seen, 0, sizeof(Seen));
++    ResetStats();
++    SendCaps(peer);
++
+     Active = true;
+     IsHost = false;
+     return true;
+@@ -426,13 +712,7 @@ void LAN::ProcessDiscovery()
+         beacon.MaxPlayers = MaxPlayers;
+         beacon.Status = 0; // TODO
+ 
+-        sockaddr_in_t saddr;
+-        memset(&saddr, 0, sizeof(saddr));
+-        saddr.sin_family = AF_INET;
+-        saddr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+-        saddr.sin_port = htons(kDiscoveryPort);
+-
+-        sendto(DiscoverySocket, (const char*)&beacon, sizeof(beacon), 0, (const sockaddr_t*)&saddr, sizeof(saddr));
++        BroadcastDiscovery(&beacon, sizeof(beacon));
+     }
+     else
+     {
+@@ -514,6 +794,8 @@ void LAN::ProcessHostEvent(ENetEvent& event)
+     {
+     case ENET_EVENT_TYPE_CONNECT:
+         {
++            DisableThrottle(event.peer);
++
+             if ((NumPlayers >= MaxPlayers) || (NumPlayers >= 16))
+             {
+                 // game is full, reject connection
+@@ -558,6 +840,8 @@ void LAN::ProcessHostEvent(ENetEvent& event)
+                 Platform::Mutex_Unlock(PlayersMutex);
+ 
+                 RemotePeers[id] = event.peer;
++                PeerCaps[id] = 0;
++                SendCaps(event.peer);
+             }
+             else
+             {
+@@ -576,6 +860,7 @@ void LAN::ProcessHostEvent(ENetEvent& event)
+ 
+             int id = player->ID;
+             RemotePeers[id] = nullptr;
++            PeerCaps[id] = 0;
+ 
+             player->ID = 0;
+             player->Status = Player_None;
+@@ -648,6 +933,10 @@ void LAN::ProcessHostEvent(ENetEvent& event)
+                     ConnectedBitmask &= ~(1 << player->ID);
+                 }
+                 break;
++
++            case Cmd_Caps: // peer advertising optional capabilities
++                HandleCaps(event.peer, data, event.packet->dataLength);
++                break;
+             }
+ 
+             enet_packet_destroy(event.packet);
+@@ -665,6 +954,7 @@ void LAN::ProcessClientEvent(ENetEvent& event)
+     case ENET_EVENT_TYPE_CONNECT:
+         {
+             // another client is establishing a direct connection to us
++            DisableThrottle(event.peer);
+ 
+             int playerid = -1;
+             for (int i = 0; i < 16; i++)
+@@ -688,6 +978,8 @@ void LAN::ProcessClientEvent(ENetEvent& event)
+ 
+             RemotePeers[playerid] = event.peer;
+             event.peer->data = &Players[playerid];
++            PeerCaps[playerid] = 0;
++            SendCaps(event.peer);
+         }
+         break;
+ 
+@@ -700,6 +992,7 @@ void LAN::ProcessClientEvent(ENetEvent& event)
+ 
+             int id = player->ID;
+             RemotePeers[id] = nullptr;
++            PeerCaps[id] = 0;
+ 
+             Platform::Mutex_Lock(PlayersMutex);
+             player->Status = Player_Disconnected;
+@@ -774,6 +1067,10 @@ void LAN::ProcessClientEvent(ENetEvent& event)
+                     ConnectedBitmask &= ~(1 << player->ID);
+                 }
+                 break;
++
++            case Cmd_Caps: // peer advertising optional capabilities
++                HandleCaps(event.peer, data, event.packet->dataLength);
++                break;
+             }
+ 
+             enet_packet_destroy(event.packet);
+@@ -795,12 +1092,17 @@ void LAN::ProcessEvent(ENetEvent& event)
+ // 0 = per-frame processing of events and eventual misc. frame
+ // 1 = checking if a misc. frame has arrived
+ // 2 = waiting for a MP frame
+-void LAN::ProcessLAN(int type)
++void LAN::ProcessLAN(int type, int timeoutms)
+ {
+     if (!Host) return;
+ 
+     u32 time_last = (u32)Platform::GetMSCount();
+ 
++    // how long a received frame may sit in the queue before it's considered stale;
++    // this used to be a fixed 16ms (one frame), which is shorter than a single
++    // Wi-Fi latency spike, so it scales with the receive wait now
++    u32 stalewindow = (u32)std::max(16, MPRecvTimeout);
++
+     // see if we have queued packets already, get rid of the stale ones
+     // any incoming packet should be consumed by the core quickly, so if
+     // they've been sitting in the queue for more than one frame's time,
+@@ -811,10 +1113,11 @@ void LAN::ProcessLAN(int type)
+         MPPacketHeader* header = (MPPacketHeader*)&enetpacket->data[0];
+         u32 packettime = header->Magic;
+ 
+-        if ((packettime > time_last) || (packettime < (time_last - 16)))
++        if ((s32)(time_last - packettime) < 0 || (time_last - packettime) > stalewindow)
+         {
+             RXQueue.pop();
+             enet_packet_destroy(enetpacket);
++            St.StaleDrops++;
+         }
+         else
+         {
+@@ -834,7 +1137,7 @@ void LAN::ProcessLAN(int type)
+         }
+     }
+ 
+-    int timeout = (type == 2) ? MPRecvTimeout : 0;
++    int timeout = (type == 2) ? ((timeoutms >= 0) ? timeoutms : MPRecvTimeout) : 0;
+     time_last = (u32)Platform::GetMSCount();
+ 
+     ENetEvent event;
+@@ -851,6 +1154,11 @@ void LAN::ProcessLAN(int type)
+                 good = false;
+             else if (header->SenderID == MyPlayer.ID)
+                 good = false;
++            else if (IsDuplicate(event.packet))
++            {
++                good = false;
++                St.DuplicateDrops++;
++            }
+ 
+             if (!good)
+             {
+@@ -892,6 +1200,19 @@ void LAN::Process()
+     ProcessDiscovery();
+     ProcessLAN(0);
+ 
++    u32 now = (u32)Platform::GetMSCount();
++    Platform::Mutex_Lock(PlayersMutex);
++    for (int i = 0; i < 16; i++)
++        St.PeerPing[i] = (RemotePeers[i] && i != MyPlayer.ID) ? RemotePeers[i]->roundTripTime : 0;
++    if ((now - WindowStartMs) >= 1000)
++    {
++        St.MaxExchangeMs = WindowMaxMs;
++        WindowMaxMs = 0;
++        WindowStartMs = now;
++    }
++    Platform::Mutex_Unlock(PlayersMutex);
++    UpdateTimeout();
++
+     FrameCount++;
+     if (FrameCount >= 60)
+     {
+@@ -958,10 +1279,24 @@ int LAN::SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp)
+     if (len)
+         memcpy(&enetpacket->data[sizeof(MPPacketHeader)], packet, len);
+ 
++    // MP frames (CMD, reply, ack) are the latency-critical ones worth duplicating;
++    // regular frames (beacons etc) are periodic anyway
++    bool redundant = Tune.Redundancy && ((type & 0xFFFF) != 0);
++
+     if (((type & 0xFFFF) == 2) && LastHostPeer)
++    {
+         enet_peer_send(LastHostPeer, Chan_MP, enetpacket);
++
++        Player* hostplayer = (Player*)LastHostPeer->data;
++        if (redundant && hostplayer && (PeerCaps[hostplayer->ID & 0xF] & Cap_Dedupe))
++        {
++            ENetPacket* copy = enet_packet_create(enetpacket->data, enetpacket->dataLength, flags);
++            enet_peer_send(LastHostPeer, Chan_MP, copy);
++            St.RedundantSent++;
++        }
++    }
+     else
+-        enet_host_broadcast(Host, Chan_MP, enetpacket);
++        SendToPeers(enetpacket, Chan_MP, redundant);
+     enet_host_flush(Host);
+ 
+     return len;
+@@ -1047,12 +1382,19 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
+     if ((myinstmask & ConnectedBitmask) == ConnectedBitmask)
+         return 0;
+ 
++    // the wait is a deadline for the whole exchange, not per packet, so that
++    // N clients don't turn into N times the timeout
++    u64 start = Platform::GetUSCount();
++    int timeout = MPRecvTimeout;
++
+     for (;;)
+     {
+-        ProcessLAN(2);
++        int elapsed = (int)((Platform::GetUSCount() - start) / 1000);
++        ProcessLAN(2, std::max(0, timeout - elapsed));
+         if (RXQueue.empty())
+         {
+             // no more replies available
++            RecordExchange(Platform::GetUSCount() - start, false);
+             return ret;
+         }
+ 
+@@ -1084,6 +1426,7 @@ u16 LAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
+             {
+                 // all the clients have sent their reply
+                 enet_packet_destroy(enetpacket);
++                RecordExchange(Platform::GetUSCount() - start, true);
+                 return ret;
+             }
+         }
+diff --git a/src/net/LAN.h b/src/net/LAN.h
+index 162c95e..d97880e 100644
+--- a/src/net/LAN.h
++++ b/src/net/LAN.h
+@@ -94,6 +94,40 @@ public:
+     int GetNumPlayers() { return NumPlayers; }
+     int GetMaxPlayers() { return MaxPlayers; }
+ 
++    // --- Wi-Fi / hotspot tuning ---------------------------------------------
++    // The DS wireless protocol expects client replies within a few hundred
++    // microseconds. melonDS runs host and clients in lockstep on emulated time,
++    // so network latency turns into brief stalls instead of failures -- as long
++    // as we wait long enough. On Wi-Fi (especially a phone hotspot) latency
++    // spikes of 30-150ms are common, which the old fixed 25ms wait could not
++    // absorb. These settings let the wait adapt to the measured exchange time.
++    struct Tuning
++    {
++        bool Adaptive = true;       // derive the wait from measured exchange times
++        int MinTimeout = 25;        // ms, lower bound (also used when not adaptive)
++        int MaxTimeout = 200;       // ms, upper bound for the adaptive wait
++        bool Redundancy = true;     // send MP frames twice to peers that support dedupe
++    };
++
++    struct Stats
++    {
++        u32 Exchanges;          // host: CMD->reply rounds completed with all replies
++        u32 ReplyTimeouts;      // host: rounds that ended with missing replies
++        u32 StaleDrops;         // packets discarded for being too old
++        u32 DuplicateDrops;     // redundant copies discarded
++        u32 RedundantSent;      // extra copies sent
++        u32 AvgExchangeUs;      // smoothed host CMD->all-replies time
++        u32 MaxExchangeMs;      // worst round in the last second
++        u32 CurrentTimeoutMs;   // wait currently in effect
++        u32 PeerPing[16];       // ENet RTT per player slot, ms
++        u16 RedundantPeers;     // bitmask of player slots that negotiated dedupe
++    };
++
++    void SetTuning(const Tuning& tuning);
++    Tuning GetTuning() const { return Tune; }
++    Stats GetStats();
++    void ResetStats();
++
+     void Process() override;
+ 
+     void Begin(int inst) override;
+@@ -137,6 +171,25 @@ private:
+ 
+     u32 FrameCount;
+ 
++    Tuning Tune;
++    Stats St;
++    u32 PeerCaps[16];           // capability flags received from each player slot
++    s64 SRTTus, RTTVarus;       // smoothed exchange time / variance (Jacobson/Karels)
++    int BackoffMs;              // raised when replies time out, decays on success
++    u32 WindowMaxMs, WindowStartMs;
++
++    struct SeenKey { u32 Sender, Type, Len, Hash; u64 Timestamp; };
++    SeenKey Seen[64];
++    int SeenPos;
++
++    void SendCaps(ENetPeer* peer);
++    void HandleCaps(ENetPeer* peer, const u8* data, size_t len);
++    void UpdateTimeout();
++    void RecordExchange(u64 us, bool complete);
++    bool IsDuplicate(const ENetPacket* pkt);
++    void SendToPeers(ENetPacket* pkt, u8 channel, bool redundant);
++    void BroadcastDiscovery(const void* data, int len);
++
+     void ProcessDiscovery();
+ 
+     void HostUpdatePlayerList();
+@@ -145,7 +198,7 @@ private:
+     void ProcessHostEvent(ENetEvent& event);
+     void ProcessClientEvent(ENetEvent& event);
+     void ProcessEvent(ENetEvent& event);
+-    void ProcessLAN(int type);
++    void ProcessLAN(int type, int timeoutms = -1);
+ 
+     int SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp);
+     int RecvPacketGeneric(u8* packet, bool block, u64* timestamp);
+-- 
+2.43.0
+

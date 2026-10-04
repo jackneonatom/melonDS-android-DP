@@ -1,0 +1,72 @@
+From 47c03ad615c20689eb2f7daf6b5ac939eb6a4c47 Mon Sep 17 00:00:00 2001
+From: melonDS Wi-Fi LAN <rickandmotyc137@gmail.com>
+Date: Sat, 3 Oct 2026 20:42:18 -0500
+Subject: [PATCH 2/2] LAN: announce readiness to players who join after the
+ game started
+
+Cmd_PlayerConnect was only broadcast from Begin(), i.e. when the
+emulated DS starts. Anyone connecting afterwards never learned that the
+host was ready for MP frames, so RecvHostPacket() treated the host as
+gone. Send it to each newly connected peer if our game is running.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013NwZqgQSwwvXin9eSMf3Cf
+---
+ src/net/LAN.cpp | 14 ++++++++++++++
+ src/net/LAN.h   |  1 +
+ 2 files changed, 15 insertions(+)
+
+diff --git a/src/net/LAN.cpp b/src/net/LAN.cpp
+index c88fc69..2dd7af3 100644
+--- a/src/net/LAN.cpp
++++ b/src/net/LAN.cpp
+@@ -369,6 +369,15 @@ void LAN::SendToPeers(ENetPacket* pkt, u8 channel, bool redundant)
+         enet_packet_destroy(pkt);
+ }
+ 
++void LAN::SendPlayerConnectIfBegun(ENetPeer* peer)
++{
++    if (!(ConnectedBitmask & (1 << MyPlayer.ID))) return;
++
++    u8 cmd = Cmd_PlayerConnect;
++    ENetPacket* pkt = enet_packet_create(&cmd, 1, ENET_PACKET_FLAG_RELIABLE);
++    enet_peer_send(peer, Chan_Cmd, pkt);
++}
++
+ void LAN::SendCaps(ENetPeer* peer)
+ {
+     u8 cmd[13];
+@@ -911,6 +920,10 @@ void LAN::ProcessHostEvent(ENetEvent& event)
+ 
+                     // broadcast updated player list
+                     HostUpdatePlayerList();
++
++                    // if our game is already running, tell the newcomer; the original
++                    // Cmd_PlayerConnect broadcast happened before they were connected
++                    SendPlayerConnectIfBegun(event.peer);
+                 }
+                 break;
+ 
+@@ -980,6 +993,7 @@ void LAN::ProcessClientEvent(ENetEvent& event)
+             event.peer->data = &Players[playerid];
+             PeerCaps[playerid] = 0;
+             SendCaps(event.peer);
++            SendPlayerConnectIfBegun(event.peer);
+         }
+         break;
+ 
+diff --git a/src/net/LAN.h b/src/net/LAN.h
+index d97880e..3d4ed13 100644
+--- a/src/net/LAN.h
++++ b/src/net/LAN.h
+@@ -183,6 +183,7 @@ private:
+     int SeenPos;
+ 
+     void SendCaps(ENetPeer* peer);
++    void SendPlayerConnectIfBegun(ENetPeer* peer);
+     void HandleCaps(ENetPeer* peer, const u8* data, size_t len);
+     void UpdateTimeout();
+     void RecordExchange(u64 us, bool complete);
+-- 
+2.43.0
+
