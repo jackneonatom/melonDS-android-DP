@@ -1,7 +1,7 @@
 From 53e288899d58cb04f85e7521b2cafa679b0c59e4 Mon Sep 17 00:00:00 2001
 From: melonDS Wi-Fi LAN <rickandmotyc137@gmail.com>
 Date: Sat, 3 Oct 2026 22:10:04 -0500
-Subject: [PATCH 3/3] LAN: lockstep the joining handshake, not just MP frames
+Subject: [PATCH 3/4] LAN: lockstep the joining handshake, not just MP frames
 
 Regular frames (authentication, association) weren't waited for, so
 both consoles kept running while they crossed the network. The DS

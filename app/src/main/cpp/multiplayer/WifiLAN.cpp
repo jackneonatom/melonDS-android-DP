@@ -250,6 +250,8 @@ void WifiLAN::ResetStats()
     BackoffMs = 0;
     WindowMaxMs = 0;
     WindowStartMs = (u32)Platform::GetMSCount();
+    LastSummaryMs = WindowStartMs;
+    memset(&LastSummary, 0, sizeof(LastSummary));
     MPRecvTimeout = std::max(RecvTimeout, Tune.MinTimeout);
     St.CurrentTimeoutMs = MPRecvTimeout;
 }
@@ -269,10 +271,15 @@ void WifiLAN::UpdateTimeout()
 
     if (Tune.Adaptive)
     {
-        // estimate from measured CMD->reply exchanges (RFC 6298 style)
+        // Estimate from measured CMD->reply exchanges. A missed reply is far more
+        // costly than waiting: the console falls further behind, so the next exchange
+        // tends to miss too, and a run of misses is what makes the DS give up. And
+        // waiting is nearly free here, because in lockstep the reply is almost always
+        // on its way (lost packets are rare, especially with duplicate frames). So be
+        // generous: twice the smoothed exchange time plus the usual variance margin.
         int fromexch = 0;
         if (SRTTus > 0)
-            fromexch = (int)((SRTTus + 4 * RTTVarus) / 1000) + 10;
+            fromexch = (int)((2 * SRTTus + 4 * RTTVarus) / 1000) + 20;
 
         // estimate from ENet's own RTT, which is available before the first exchange
         int maxping = 0;
@@ -1178,10 +1185,15 @@ void WifiLAN::ProcessLAN(int type, int timeoutms)
 
     u32 time_last = (u32)Platform::GetMSCount();
 
-    // how long a received frame may sit in the queue before it's considered stale;
-    // this used to be a fixed 16ms (one frame), which is shorter than a single
-    // Wi-Fi latency spike, so it scales with the receive wait now
-    u32 stalewindow = (u32)std::max(16, MPRecvTimeout);
+    // How long a received frame may sit in the queue before it's discarded.
+    // This used to be 16ms (one frame). But Process() pulls a frame at the start of
+    // each emulated frame, and a console that's running behind real time only gets
+    // to it once its emulation catches up -- easily more than 16-40ms on a phone.
+    // Discarding it then guarantees a missed reply, and a run of those ends the
+    // connection ("connection interrupted"). A frame the host has already moved on
+    // from is harmless: replies are matched by timestamp and old ones are ignored.
+    // So this is only a safety net against processing a backlog after a pause.
+    u32 stalewindow = (u32)std::max(500, MPRecvTimeout * 4);
 
     // see if we have queued packets already, get rid of the stale ones
     // any incoming packet should be consumed by the core quickly, so if
@@ -1195,6 +1207,9 @@ void WifiLAN::ProcessLAN(int type, int timeoutms)
 
         if ((s32)(time_last - packettime) < 0 || (time_last - packettime) > stalewindow)
         {
+            if (St.StaleDrops < 20 || (St.StaleDrops % 100) == 0)
+                Platform::Log(Platform::LogLevel::Warn, "LAN: dropped stale frame type %u, %ums old\n",
+                              header->Type & 0xFFFF, (u32)(time_last - packettime));
             RXQueue.pop();
             enet_packet_destroy(enetpacket);
             St.StaleDrops++;
@@ -1252,13 +1267,41 @@ void WifiLAN::Process()
     Platform::Mutex_Lock(PlayersMutex);
     for (int i = 0; i < 16; i++)
         St.PeerPing[i] = (RemotePeers[i] && i != MyPlayer.ID) ? RemotePeers[i]->roundTripTime : 0;
+    bool summary = false;
+    Stats snap;
     if ((now - WindowStartMs) >= 1000)
     {
         St.MaxExchangeMs = WindowMaxMs;
         WindowMaxMs = 0;
         WindowStartMs = now;
+
+        // a line every 2s while MP traffic is flowing, for the diagnostics timeline
+        if ((now - LastSummaryMs) >= 2000 &&
+            (St.Exchanges != LastSummary.Exchanges || St.ReplyTimeouts != LastSummary.ReplyTimeouts ||
+             St.StaleDrops != LastSummary.StaleDrops || St.HandshakeWaits != LastSummary.HandshakeWaits))
+        {
+            summary = true;
+            snap = St;
+        }
     }
     Platform::Mutex_Unlock(PlayersMutex);
+
+    if (summary)
+    {
+        u32 secs = std::max(1u, (now - LastSummaryMs) / 1000);
+        Platform::Log(Platform::LogLevel::Info,
+                      "LAN: last %us: %u exchanges, %u missed replies, %u stale, %u handshake waits (%u timed out); "
+                      "avg exchange %.1fms, worst %ums, wait limit %ums\n",
+                      secs,
+                      snap.Exchanges - LastSummary.Exchanges,
+                      snap.ReplyTimeouts - LastSummary.ReplyTimeouts,
+                      snap.StaleDrops - LastSummary.StaleDrops,
+                      snap.HandshakeWaits - LastSummary.HandshakeWaits,
+                      snap.HandshakeTimeouts - LastSummary.HandshakeTimeouts,
+                      snap.AvgExchangeUs / 1000.0, snap.MaxExchangeMs, snap.CurrentTimeoutMs);
+        LastSummary = snap;
+        LastSummaryMs = now;
+    }
     UpdateTimeout();
 
     FrameCount++;
@@ -1438,6 +1481,16 @@ int WifiLAN::RecvPacket(int inst, u8* packet, u64* timestamp)
 
         AwaitReply = false;
         ReplyArrived = false;
+
+        // The wait may have queued MP frames (CMD/reply/ack). The regular-frame path
+        // discards MP frames it finds at the head of the queue, so leave them for
+        // RecvHostPacket()/RecvReplies(), which run right after.
+        if (!RXQueue.empty())
+        {
+            const MPPacketHeader* head = (const MPPacketHeader*)&RXQueue.front()->data[0];
+            if ((head->Type & 0xFFFF) != 0)
+                return 0;
+        }
     }
 
     return RecvPacketGeneric(packet, false, timestamp);

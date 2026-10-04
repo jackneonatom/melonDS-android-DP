@@ -93,7 +93,7 @@ class LocalMultiplayerActivity : AppCompatActivity() {
             MelonMultiplayer.setTuning(
                 adaptive = prefs.getBoolean(PREF_ADAPTIVE, true),
                 minTimeoutMs = 25,
-                maxTimeoutMs = prefs.getInt(PREF_MAX_WAIT, 200),
+                maxTimeoutMs = prefs.getInt(PREF_MAX_WAIT, 300),
                 redundancy = prefs.getBoolean(PREF_REDUNDANCY, true),
                 handshakeLockstep = prefs.getBoolean(PREF_HANDSHAKE, true),
             )
@@ -131,7 +131,7 @@ class LocalMultiplayerActivity : AppCompatActivity() {
             MelonTheme {
                 LocalMultiplayerScreen(
                     initialName = defaultName,
-                    initialMaxWait = prefs.getInt(PREF_MAX_WAIT, 200),
+                    initialMaxWait = prefs.getInt(PREF_MAX_WAIT, 300),
                     initialAdaptive = prefs.getBoolean(PREF_ADAPTIVE, true),
                     initialRedundancy = prefs.getBoolean(PREF_REDUNDANCY, true),
                     initialHandshake = prefs.getBoolean(PREF_HANDSHAKE, true),

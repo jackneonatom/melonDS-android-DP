@@ -108,7 +108,7 @@ public:
     {
         bool Adaptive = true;       // derive the wait from measured exchange times
         int MinTimeout = 25;        // ms, lower bound (also used when not adaptive)
-        int MaxTimeout = 200;       // ms, upper bound for the adaptive wait
+        int MaxTimeout = 300;       // ms, upper bound for the adaptive wait
         bool Redundancy = true;     // send MP frames twice to peers that support dedupe
         bool HandshakeLockstep = true; // pause until a console answers our direct frames
     };
@@ -185,6 +185,8 @@ private:
     s64 SRTTus, RTTVarus;       // smoothed exchange time / variance (Jacobson/Karels)
     int BackoffMs;              // raised when replies time out, decays on success
     u32 WindowMaxMs, WindowStartMs;
+    Stats LastSummary;          // for the periodic diagnostics line
+    u32 LastSummaryMs;
 
     struct SeenKey { u32 Sender, Type, Len, Hash; u64 Timestamp; };
     SeenKey Seen[64];
