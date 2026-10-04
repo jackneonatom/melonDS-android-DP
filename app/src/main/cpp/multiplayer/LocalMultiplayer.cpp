@@ -382,6 +382,7 @@ namespace MelonDSAndroid::LocalMultiplayer
                 << "ms wait=" << st.CurrentTimeoutMs << "ms\n";
             out << "       stale=" << st.StaleDrops << " dup=" << st.DuplicateDrops << " redundantSent=" << st.RedundantSent
                 << " redundantPeers=" << st.RedundantPeers << "\n";
+            out << "       quickPolls=" << st.QuickPolls << "\n";
             out << "       handshakeWaits=" << st.HandshakeWaits << " handshakeTimeouts=" << st.HandshakeTimeouts
                 << " lastHandshake=" << st.LastHandshakeMs << "ms maxHandshake=" << st.MaxHandshakeMs << "ms\n";
 

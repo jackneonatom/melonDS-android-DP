@@ -26,6 +26,7 @@
 #include <vector>
 #include <map>
 #include <queue>
+#include <deque>
 
 #include <enet/enet.h>
 
@@ -125,6 +126,7 @@ public:
         u32 CurrentTimeoutMs;   // wait currently in effect
         u32 PeerPing[16];       // ENet RTT per player slot, ms
         u16 RedundantPeers;     // bitmask of player slots that negotiated dedupe
+        u32 QuickPolls;         // host: short polls of a client that stopped answering
         u32 HandshakeWaits;     // pauses waiting for a reply to a direct frame
         u32 HandshakeTimeouts;  // ...that ended without a reply
         u32 LastHandshakeMs;
@@ -175,7 +177,11 @@ private:
     int MPRecvTimeout;
     int LastHostID;
     ENetPeer* LastHostPeer;
-    std::queue<ENetPacket*> RXQueue;
+    std::deque<ENetPacket*> PacketQueue;   // regular frames, CMDs, ACKs (in order)
+    std::deque<ENetPacket*> ReplyQueue;    // MP replies, for the host's RecvReplies()
+
+    static const int kSilentAfterMisses = 3;
+    u8 AidMiss[16];             // consecutive polls each client (by AID) didn't answer
 
     u32 FrameCount;
 
@@ -215,7 +221,9 @@ private:
     void ProcessHostEvent(ENetEvent& event);
     void ProcessClientEvent(ENetEvent& event);
     void ProcessEvent(ENetEvent& event);
-    void ProcessLAN(int type, int timeoutms = -1);
+    bool Pump(std::deque<ENetPacket*>* want, int timeoutms);
+    void ExpireQueue(std::deque<ENetPacket*>& q);
+    void ClearQueues();
 
     int SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp);
     int RecvPacketGeneric(u8* packet, bool block, u64* timestamp);

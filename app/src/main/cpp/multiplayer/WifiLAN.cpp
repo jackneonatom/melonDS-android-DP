@@ -158,6 +158,7 @@ WifiLAN::WifiLAN() noexcept : Inited(false)
     AwaitReply = false;
     ReplyArrived = false;
     AwaitStartMs = 0;
+    memset(AidMiss, 0, sizeof(AidMiss));
     memset(AwaitMAC, 0, sizeof(AwaitMAC));
     ResetStats();
 
@@ -695,12 +696,7 @@ void WifiLAN::EndSession()
 
     Active = false;
 
-    while (!RXQueue.empty())
-    {
-        ENetPacket* packet = RXQueue.front();
-        RXQueue.pop();
-        enet_packet_destroy(packet);
-    }
+    ClearQueues();
 
     for (int i = 0; i < 16; i++)
     {
@@ -1128,6 +1124,18 @@ void WifiLAN::ProcessEvent(ENetEvent& event)
 // 0 = per-frame processing of events and eventual misc. frame
 // 1 = checking if a misc. frame has arrived
 // 2 = waiting for a MP frame
+// Frames are kept in two queues, the way the single-machine backend (LocalMP) does
+// it -- and Download Play is known to work there:
+//  - ReplyQueue: MP replies (type 2), read only by the host's RecvReplies().
+//  - PacketQueue: everything else (regular frames, CMDs, ACKs), read in order by
+//    RecvPacket() / RecvHostPacket().
+// Nothing is discarded for being "the wrong kind" any more. Previously there was one
+// queue: the host's reply wait destroyed every regular frame that arrived while it
+// waited (association, deauthentication, a Download Play client reconnecting after
+// booting the downloaded game), and the regular-frame path destroyed CMDs/ACKs.
+
+static const size_t kMaxQueuedFrames = 1024;
+
 // Validate an ENet event; MP frames are queued for the core, anything else goes
 // to the session logic. Returns true if a frame was queued.
 bool WifiLAN::HandleIncoming(ENetEvent& event)
@@ -1147,6 +1155,8 @@ bool WifiLAN::HandleIncoming(ENetEvent& event)
         good = false;
     else if (header->SenderID == MyPlayer.ID)
         good = false;
+    else if (event.packet->dataLength < sizeof(MPPacketHeader) + header->Length)
+        good = false;
     // only MP frames are ever sent twice (see SendPacketGeneric), so only they
     // need filtering; regular frames always pass through untouched
     else if ((header->Type & 0xFFFF) != 0 && IsDuplicate(event.packet))
@@ -1164,7 +1174,7 @@ bool WifiLAN::HandleIncoming(ENetEvent& event)
     // a reply to a handshake frame we're waiting on?
     if (AwaitReply)
     {
-        if (header->Type != 0)
+        if ((header->Type & 0xFFFF) != 0)
             ReplyArrived = true;
         else if (header->Length >= 12+24 &&
                  memcmp(&event.packet->data[sizeof(MPPacketHeader) + 12 + 4], AwaitMAC, 6) == 0)
@@ -1173,86 +1183,82 @@ bool WifiLAN::HandleIncoming(ENetEvent& event)
 
     // mark this packet with the time it was received
     header->Magic = (u32)Platform::GetMSCount();
-
     event.packet->userData = event.peer;
-    RXQueue.push(event.packet);
+
+    std::deque<ENetPacket*>& q = ((header->Type & 0xFFFF) == 2) ? ReplyQueue : PacketQueue;
+    q.push_back(event.packet);
+
+    // bound memory while nothing reads the queue (e.g. emulated Wi-Fi is off)
+    while (q.size() > kMaxQueuedFrames)
+    {
+        enet_packet_destroy(q.front());
+        q.pop_front();
+        St.StaleDrops++;
+    }
     return true;
 }
 
-void WifiLAN::ProcessLAN(int type, int timeoutms)
+// Drop frames that have waited far longer than any exchange could take. Only a
+// safety net: frames are normally consumed long before this, and Begin() clears
+// the queues when a console switches its Wi-Fi on.
+void WifiLAN::ExpireQueue(std::deque<ENetPacket*>& q)
 {
-    if (!Host) return;
+    u32 now = (u32)Platform::GetMSCount();
+    u32 window = (u32)std::max(1000, MPRecvTimeout * 4);
 
-    u32 time_last = (u32)Platform::GetMSCount();
-
-    // How long a received frame may sit in the queue before it's discarded.
-    // This used to be 16ms (one frame). But Process() pulls a frame at the start of
-    // each emulated frame, and a console that's running behind real time only gets
-    // to it once its emulation catches up -- easily more than 16-40ms on a phone.
-    // Discarding it then guarantees a missed reply, and a run of those ends the
-    // connection ("connection interrupted"). A frame the host has already moved on
-    // from is harmless: replies are matched by timestamp and old ones are ignored.
-    // So this is only a safety net against processing a backlog after a pause.
-    u32 stalewindow = (u32)std::max(500, MPRecvTimeout * 4);
-
-    // see if we have queued packets already, get rid of the stale ones
-    // any incoming packet should be consumed by the core quickly, so if
-    // they've been sitting in the queue for more than one frame's time,
-    // we can assume they're stale
-    while (!RXQueue.empty())
+    while (!q.empty())
     {
-        ENetPacket* enetpacket = RXQueue.front();
-        MPPacketHeader* header = (MPPacketHeader*)&enetpacket->data[0];
-        u32 packettime = header->Magic;
-
-        if ((s32)(time_last - packettime) < 0 || (time_last - packettime) > stalewindow)
-        {
-            if (St.StaleDrops < 20 || (St.StaleDrops % 100) == 0)
-                Platform::Log(Platform::LogLevel::Warn, "LAN: dropped stale frame type %u, %ums old\n",
-                              header->Type & 0xFFFF, (u32)(time_last - packettime));
-            RXQueue.pop();
-            enet_packet_destroy(enetpacket);
-            St.StaleDrops++;
-        }
-        else
-        {
-            // we got a packet, depending on what the caller wants we might be able to return now
-            if (type == 2) return;
-            if (type == 1)
-            {
-                // if looking for a misc. frame, we shouldn't be receiving a MP frame
-                if (header->Type == 0)
-                    return;
-
-                RXQueue.pop();
-                enet_packet_destroy(enetpacket);
-            }
-
+        MPPacketHeader* header = (MPPacketHeader*)&q.front()->data[0];
+        u32 age = now - header->Magic;
+        if ((s32)age >= 0 && age <= window)
             break;
+
+        if (St.StaleDrops < 20 || (St.StaleDrops % 100) == 0)
+            Platform::Log(Platform::LogLevel::Warn, "LAN: dropped stale frame type %u, %ums old\n",
+                          header->Type & 0xFFFF, age);
+        enet_packet_destroy(q.front());
+        q.pop_front();
+        St.StaleDrops++;
+    }
+}
+
+void WifiLAN::ClearQueues()
+{
+    for (auto* q : { &PacketQueue, &ReplyQueue })
+    {
+        while (!q->empty())
+        {
+            enet_packet_destroy(q->front());
+            q->pop_front();
         }
     }
+}
 
-    int timeout = (type == 2) ? ((timeoutms >= 0) ? timeoutms : MPRecvTimeout) : 0;
-    time_last = (u32)Platform::GetMSCount();
+// Service the network until `want` has a frame or `timeoutms` passes. With
+// want == nullptr, just handle everything that's pending.
+bool WifiLAN::Pump(std::deque<ENetPacket*>* want, int timeoutms)
+{
+    if (!Host) return false;
 
-    ENetEvent event;
-    while (enet_host_service(Host, &event, timeout) > 0)
+    if (want)
     {
-        if (HandleIncoming(event))
-        {
-            // return now -- if we are receiving MP frames, if we keep going
-            // we'll consume too many even if we have no timeout set
-            return;
-        }
+        ExpireQueue(*want);
+        if (!want->empty()) return true;
+    }
 
-        if (type == 2)
-        {
-            u32 time = (u32)Platform::GetMSCount();
-            if (time < time_last) return;
-            timeout -= (int)(time - time_last);
-            if (timeout <= 0) return;
-            time_last = time;
-        }
+    u32 start = (u32)Platform::GetMSCount();
+    for (;;)
+    {
+        int remaining = timeoutms - (int)((u32)Platform::GetMSCount() - start);
+        if (remaining < 0) remaining = 0;
+
+        ENetEvent event;
+        if (enet_host_service(Host, &event, remaining) <= 0)
+            return want && !want->empty();
+
+        HandleIncoming(event);
+        if (want && !want->empty())
+            return true;
     }
 }
 
@@ -1261,7 +1267,9 @@ void WifiLAN::Process()
     if (!Active) return;
 
     ProcessDiscovery();
-    ProcessLAN(0);
+    Pump(nullptr, 0);
+    ExpireQueue(PacketQueue);
+    ExpireQueue(ReplyQueue);
 
     u32 now = (u32)Platform::GetMSCount();
     Platform::Mutex_Lock(PlayersMutex);
@@ -1278,6 +1286,7 @@ void WifiLAN::Process()
         // a line every 2s while MP traffic is flowing, for the diagnostics timeline
         if ((now - LastSummaryMs) >= 2000 &&
             (St.Exchanges != LastSummary.Exchanges || St.ReplyTimeouts != LastSummary.ReplyTimeouts ||
+             St.QuickPolls != LastSummary.QuickPolls ||
              St.StaleDrops != LastSummary.StaleDrops || St.HandshakeWaits != LastSummary.HandshakeWaits))
         {
             summary = true;
@@ -1290,11 +1299,12 @@ void WifiLAN::Process()
     {
         u32 secs = std::max(1u, (now - LastSummaryMs) / 1000);
         Platform::Log(Platform::LogLevel::Info,
-                      "LAN: last %us: %u exchanges, %u missed replies, %u stale, %u handshake waits (%u timed out); "
-                      "avg exchange %.1fms, worst %ums, wait limit %ums\n",
+                      "LAN: last %us: %u exchanges, %u missed replies, %u quick polls of silent consoles, %u stale, "
+                      "%u handshake waits (%u timed out); avg exchange %.1fms, worst %ums, wait limit %ums\n",
                       secs,
                       snap.Exchanges - LastSummary.Exchanges,
                       snap.ReplyTimeouts - LastSummary.ReplyTimeouts,
+                      snap.QuickPolls - LastSummary.QuickPolls,
                       snap.StaleDrops - LastSummary.StaleDrops,
                       snap.HandshakeWaits - LastSummary.HandshakeWaits,
                       snap.HandshakeTimeouts - LastSummary.HandshakeTimeouts,
@@ -1333,6 +1343,14 @@ void WifiLAN::Begin(int inst)
     LastHostID = -1;
     LastHostPeer = nullptr;
 
+    // the console just switched its Wi-Fi on: anything queued before is meaningless
+    // to it (a Download Play client rebooting into the downloaded game would
+    // otherwise first wade through hundreds of the old session's frames)
+    ClearQueues();
+    memset(AidMiss, 0, sizeof(AidMiss));
+    AwaitReply = false;
+    ReplyArrived = false;
+
     u8 cmd = Cmd_PlayerConnect;
     ENetPacket* pkt = enet_packet_create(&cmd, 1, ENET_PACKET_FLAG_RELIABLE);
     enet_host_broadcast(Host, Chan_Cmd, pkt);
@@ -1343,6 +1361,8 @@ void WifiLAN::End(int inst)
     if (!Host) return;
 
     ConnectedBitmask &= ~(1 << MyPlayer.ID);
+    ClearQueues();
+    AwaitReply = false;
 
     u8 cmd = Cmd_PlayerDisconnect;
     ENetPacket* pkt = enet_packet_create(&cmd, 1, ENET_PACKET_FLAG_RELIABLE);
@@ -1376,13 +1396,26 @@ int WifiLAN::SendPacketGeneric(u32 type, u8* packet, int len, u64 timestamp)
     // emulated time, so over Wi-Fi the reply arrives "late" and the DS reports a
     // communication error. After sending a frame to a specific console, pause on
     // the next receive until that console answers, so the reply looks instant.
+    // Only frames that ask for an answer: waiting after a response or a
+    // deauthentication (which never get one) just stalled the console.
     if (type == 0 && Tune.HandshakeLockstep && len >= 12+24)
     {
         u16 framectl = packet[12] | (packet[13] << 8);
         const u8* dest = &packet[12 + 4];
         bool unicast = !(dest[0] & 0x01);
-        bool control = (framectl & 0x000C) == 0x0004;
-        if (unicast && !control)
+        bool request = false;
+        if ((framectl & 0x000C) == 0x0000) // management frame
+        {
+            u32 subtype = (framectl >> 4) & 0xF;
+            if (subtype == 0x0 || subtype == 0x2 || subtype == 0x4)
+                request = true;        // (re)association request, probe request
+            else if (subtype == 0xB && len >= 12+24+4)
+            {
+                u16 seq = packet[12+24+2] | (packet[12+24+3] << 8);
+                request = (seq & 1);   // authentication: odd sequence numbers are requests
+            }
+        }
+        if (unicast && request)
         {
             AwaitReply = true;
             ReplyArrived = false;
@@ -1418,11 +1451,11 @@ int WifiLAN::RecvPacketGeneric(u8* packet, bool block, u64* timestamp)
 {
     if (!Host) return 0;
 
-    ProcessLAN(block ? 2 : 1);
-    if (RXQueue.empty()) return 0;
+    Pump(&PacketQueue, block ? MPRecvTimeout : 0);
+    if (PacketQueue.empty()) return 0;
 
-    ENetPacket* enetpacket = RXQueue.front();
-    RXQueue.pop();
+    ENetPacket* enetpacket = PacketQueue.front();
+    PacketQueue.pop_front();
     MPPacketHeader* header = (MPPacketHeader*)&enetpacket->data[0];
 
     u32 len = header->Length;
@@ -1454,7 +1487,7 @@ int WifiLAN::RecvPacket(int inst, u8* packet, u64* timestamp)
 {
     if (AwaitReply && Host)
     {
-        int budget = std::clamp(MPRecvTimeout * 2, 40, std::max(40, Tune.MaxTimeout));
+        int budget = std::clamp(MPRecvTimeout * 2, 40, std::max(40, std::min(200, Tune.MaxTimeout)));
         u32 start = AwaitStartMs;
 
         while (!ReplyArrived)
@@ -1481,16 +1514,6 @@ int WifiLAN::RecvPacket(int inst, u8* packet, u64* timestamp)
 
         AwaitReply = false;
         ReplyArrived = false;
-
-        // The wait may have queued MP frames (CMD/reply/ack). The regular-frame path
-        // discards MP frames it finds at the head of the queue, so leave them for
-        // RecvHostPacket()/RecvReplies(), which run right after.
-        if (!RXQueue.empty())
-        {
-            const MPPacketHeader* head = (const MPPacketHeader*)&RXQueue.front()->data[0];
-            if ((head->Type & 0xFFFF) != 0)
-                return 0;
-        }
     }
 
     return RecvPacketGeneric(packet, false, timestamp);
@@ -1542,38 +1565,61 @@ u16 WifiLAN::RecvReplies(int inst, u8* packets, u64 timestamp, u16 aidmask)
     // the wait is a deadline for the whole exchange, not per packet, so that
     // N clients don't turn into N times the timeout
     u64 start = MonotonicUS();
-    int timeout = MPRecvTimeout;
 
     for (;;)
     {
+        // Wait the full time only if one of the consoles we're still waiting for
+        // has been answering. One that missed several polls in a row has most likely
+        // left the exchange -- e.g. a Download Play client rebooting into the
+        // downloaded game, which then searches for the host for only a few seconds.
+        // Waiting the full time on every poll for it slowed the host's game to a
+        // crawl, so it reached its multiplayer lobby after the client had given up.
+        // Any reply from it, even a late one, restores normal waiting.
+        u16 outstanding = aidmask & ~ret & 0xFFFE;
+        bool waitlong = false;
+        for (int a = 1; a < 16; a++)
+        {
+            if ((outstanding & (1 << a)) && AidMiss[a] < kSilentAfterMisses)
+                waitlong = true;
+        }
+        int limit = waitlong ? MPRecvTimeout : std::min(MPRecvTimeout, Tune.MinTimeout);
         int elapsed = (int)((MonotonicUS() - start) / 1000);
-        ProcessLAN(2, std::max(0, timeout - elapsed));
-        if (RXQueue.empty())
+
+        if (!Pump(&ReplyQueue, std::max(0, limit - elapsed)))
         {
             // no more replies available
-            RecordExchange(MonotonicUS() - start, false);
+            for (int a = 1; a < 16; a++)
+            {
+                if ((outstanding & (1 << a)) && AidMiss[a] < 255)
+                    AidMiss[a]++;
+            }
+
+            if (waitlong)
+                RecordExchange(MonotonicUS() - start, false);
+            else
+            {
+                Platform::Mutex_Lock(PlayersMutex);
+                St.QuickPolls++;
+                Platform::Mutex_Unlock(PlayersMutex);
+            }
             return ret;
         }
 
-        ENetPacket* enetpacket = RXQueue.front();
-        RXQueue.pop();
+        ENetPacket* enetpacket = ReplyQueue.front();
+        ReplyQueue.pop_front();
         MPPacketHeader* header = (MPPacketHeader*)&enetpacket->data[0];
-        bool good = true;
-        if ((header->Type & 0xFFFF) != 2)
-            good = false;
-        else if (header->Timestamp < (timestamp - 32))
-            good = false;
 
-        if (good)
+        u32 aid = (header->Type >> 16) & 0xF;
+        if (aid)
+            AidMiss[aid] = 0; // it's still taking part, even if this reply is late
+
+        if (header->Timestamp >= (timestamp - 32))
         {
             u32 len = header->Length;
-            if (len)
+            if (len && aid)
             {
                 if (len > 1024) len = 1024;
-
-                u32 aid = header->Type >> 16;
                 memcpy(&packets[(aid-1)*1024], &enetpacket->data[sizeof(MPPacketHeader)], len);
-
                 ret |= (1<<aid);
             }
 

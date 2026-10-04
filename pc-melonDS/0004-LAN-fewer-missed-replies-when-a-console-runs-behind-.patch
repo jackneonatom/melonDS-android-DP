@@ -1,7 +1,7 @@
 From 4e18cb02d0dc020b9eb981d7659990cc113f0773 Mon Sep 17 00:00:00 2001
 From: melonDS Wi-Fi LAN <rickandmotyc137@gmail.com>
 Date: Sun, 4 Oct 2026 01:37:26 -0500
-Subject: [PATCH 4/4] LAN: fewer missed replies when a console runs behind real
+Subject: [PATCH 4/5] LAN: fewer missed replies when a console runs behind real
  time
 
 - Adaptive wait uses twice the smoothed exchange time plus variance
