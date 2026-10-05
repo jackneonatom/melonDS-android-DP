@@ -12,7 +12,11 @@ sealed class EmulatorUiEvent {
         data class GameControlsScreen(val gameKey: String, val gameName: String) : OpenScreen()
     }
     data class ShowPauseMenu(val pauseMenu: PauseMenu) : EmulatorUiEvent()
-    data class ShowTouchMacroEditor(val macros: List<me.magnum.melonds.domain.model.TouchMacro>) : EmulatorUiEvent()
+    data class ShowTouchMacroEditor(
+        val macros: List<me.magnum.melonds.domain.model.TouchMacro>,
+        /** The game's current touchscreen (256 x 192), or null if it couldn't be captured. */
+        val touchscreenImage: android.graphics.Bitmap?,
+    ) : EmulatorUiEvent()
     data class ShowRewindWindow(val rewindWindow: RewindWindow, val windowPosition: RewindWindowPosition) : EmulatorUiEvent()
     data class ShowRomSaveStates(val saveStates: List<SaveStateSlot>, val reason: Reason) : EmulatorUiEvent() {
         enum class Reason {

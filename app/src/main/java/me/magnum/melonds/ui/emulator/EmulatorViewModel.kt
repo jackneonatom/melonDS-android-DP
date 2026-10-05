@@ -335,6 +335,22 @@ class EmulatorViewModel @Inject constructor(
         return _gameInputProfile.value?.touchStick ?: settingsRepository.getTouchStickSettings()
     }
 
+    /**
+     * The current DS touchscreen image. Screenshots hold both DS screens stacked (256 x 384, top screen
+     * first); the touchscreen is always the lower half, whatever layout or screen swap is in use.
+     */
+    private suspend fun captureTouchscreenImage(): android.graphics.Bitmap? {
+        return try {
+            if (!emulatorManager.takeScreenshot()) return null
+            withContext(Dispatchers.Default) {
+                val both = screenshotFrameBufferProvider.getScreenshot()
+                android.graphics.Bitmap.createBitmap(both, 0, 192, 256, 192)
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun saveTouchMacros(macros: List<TouchMacro>) {
         val key = gameInputProfileKey ?: return
         val updated = gameInputProfileRepository.getProfile(key).copy(macros = macros)
@@ -499,7 +515,10 @@ class EmulatorViewModel @Inject constructor(
                     }
                     RomPauseMenuOption.VIEW_ACHIEVEMENTS -> _uiEvent.tryEmit(EmulatorUiEvent.ShowAchievementList)
                     RomPauseMenuOption.TOUCH_MACROS -> {
-                        _uiEvent.tryEmit(EmulatorUiEvent.ShowTouchMacroEditor(_gameInputProfile.value?.macros.orEmpty()))
+                        sessionCoroutineScope.launch {
+                            val image = captureTouchscreenImage()
+                            _uiEvent.emit(EmulatorUiEvent.ShowTouchMacroEditor(_gameInputProfile.value?.macros.orEmpty(), image))
+                        }
                     }
                     RomPauseMenuOption.GAME_CONTROLS -> {
                         currentGameForInputProfile()?.let { (key, name) ->

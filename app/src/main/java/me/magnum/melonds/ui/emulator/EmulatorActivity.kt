@@ -1,5 +1,6 @@
 package me.magnum.melonds.ui.emulator
 
+import androidx.compose.ui.graphics.asImageBitmap
 import android.view.InputDevice
 import kotlinx.coroutines.flow.combine
 import me.magnum.melonds.ui.gamecontrols.GameControlsActivity
@@ -543,7 +544,7 @@ class EmulatorActivity : AppCompatActivity() {
                         is EmulatorUiEvent.OpenScreen.GameControlsScreen -> {
                             gameControlsLauncher.launch(GameControlsActivity.intent(this@EmulatorActivity, it.gameKey, it.gameName))
                         }
-                        is EmulatorUiEvent.ShowTouchMacroEditor -> openTouchMacroEditor(it.macros)
+                        is EmulatorUiEvent.ShowTouchMacroEditor -> openTouchMacroEditor(it.macros, it.touchscreenImage)
                         EmulatorUiEvent.OpenScreen.SettingsScreen -> {
                             val settingsIntent = Intent(this@EmulatorActivity, SettingsActivity::class.java)
                             settingsLauncher.launch(settingsIntent)
@@ -944,28 +945,12 @@ class EmulatorActivity : AppCompatActivity() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
-    private fun openTouchMacroEditor(macros: List<TouchMacro>) {
-        val touchView = binding.viewLayoutControls.getTouchScreenView()
-        if (touchView == null) {
-            Toast.makeText(this, R.string.macro_touchscreen_hidden, Toast.LENGTH_LONG).show()
-            viewModel.resumeEmulator()
-            return
-        }
-
-        // where the touchscreen is drawn, relative to the Compose layer the editor lives in
-        val viewLocation = IntArray(2)
-        val composeLocation = IntArray(2)
-        touchView.getLocationInWindow(viewLocation)
-        binding.layoutCompose.getLocationInWindow(composeLocation)
-        val left = (viewLocation[0] - composeLocation[0]).toFloat()
-        val top = (viewLocation[1] - composeLocation[1]).toFloat()
-        val rect = androidx.compose.ui.geometry.Rect(left, top, left + touchView.width, top + touchView.height)
-
+    private fun openTouchMacroEditor(macros: List<TouchMacro>, touchscreenImage: android.graphics.Bitmap?) {
         inputProcessor?.releaseAll()
         TouchRouter.reset()
         activeOverlays.addActiveOverlay(EmulatorOverlay.TOUCH_MACRO_EDITOR)
         macroCaptureSession = -1
-        macroEditorState.value = TouchMacroEditorState(macros, rect)
+        macroEditorState.value = TouchMacroEditorState(macros, touchscreenImage?.asImageBitmap())
     }
 
     private fun closeTouchMacroEditor() {

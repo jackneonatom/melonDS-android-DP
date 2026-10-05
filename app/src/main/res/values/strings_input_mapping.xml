@@ -74,5 +74,5 @@
     <string name="macro_bind_another">Bind another</string>
     <string name="macro_drag_hint">Drag the marker to move it.</string>
     <string name="macro_delete">Delete</string>
-    <string name="macro_touchscreen_hidden">The touchscreen isn\'t visible in the current layout, so macros can\'t be placed.</string>
+    <string name="macro_no_preview">Couldn\'t capture the touchscreen image. Markers can still be placed: the box is the DS touchscreen.</string>
 </resources>

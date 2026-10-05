@@ -1,7 +1,14 @@
 package me.magnum.melonds.ui.emulator.macros
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,7 +28,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
@@ -49,12 +55,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathFillType
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -70,11 +71,11 @@ import me.magnum.melonds.ui.common.input.BindingCapture
 import kotlin.math.roundToInt
 
 /**
- * Editing state for the touch macro editor. [touchRect] is where the DS touchscreen is drawn, in pixels
- * relative to the editor's own top-left corner.
+ * Editing state for the touch macro editor. [touchscreenImage] is the game's current touchscreen
+ * (256 x 192), shown enlarged so markers can be placed on it, or null if it couldn't be captured.
  */
 @Stable
-class TouchMacroEditorState(initial: List<TouchMacro>, val touchRect: Rect) {
+class TouchMacroEditorState(initial: List<TouchMacro>, val touchscreenImage: ImageBitmap?) {
     val macros = mutableStateListOf<TouchMacro>().apply { addAll(initial.sortedBy { it.id }) }
     var selectedId by mutableStateOf(initial.minByOrNull { it.id }?.id)
     /** True while waiting for a controller button to bind to the selected macro. */
@@ -131,12 +132,6 @@ class TouchMacroEditorState(initial: List<TouchMacro>, val touchRect: Rect) {
         }
         capturing = false
     }
-
-    /** DS touchscreen pixel -> editor pixel. */
-    fun toScreen(x: Int, y: Int): Offset = Offset(
-        touchRect.left + (x + 0.5f) / 256f * touchRect.width,
-        touchRect.top + (y + 0.5f) / 192f * touchRect.height,
-    )
 }
 
 @Composable
@@ -149,63 +144,91 @@ fun TouchMacroEditor(
         if (state.capturing) state.capturing = false else onCancel()
     }
 
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val rect = state.touchRect
-        val heightPx = constraints.maxHeight.toFloat()
-
-        // swallow touches so the paused game's on-screen buttons don't receive them; tapping empty space deselects
-        Box(
-            Modifier
-                .fillMaxSize()
-                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
-                    state.capturing = false
-                }
-        )
-
-        // dim everything but the touchscreen, and outline it
-        Canvas(Modifier.fillMaxSize()) {
-            val path = Path().apply {
-                fillType = PathFillType.EvenOdd
-                addRect(Rect(0f, 0f, size.width, size.height))
-                addRect(rect)
+    // Covers the whole screen (so the paused game's on-screen buttons get no touches) and shows the
+    // touchscreen enlarged next to the editing panel. Working on a copy of the touchscreen image means it
+    // doesn't matter where, or on which display, the layout draws the real one.
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.92f))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                state.capturing = false
             }
-            drawPath(path, Color.Black.copy(alpha = 0.6f))
-            drawRect(Color.White, topLeft = rect.topLeft, size = rect.size, style = Stroke(width = 2.dp.toPx()))
+    ) {
+        val landscape = maxWidth > maxHeight
+        if (landscape) {
+            Row(Modifier.fillMaxSize()) {
+                TouchscreenPreview(state, Modifier.weight(1f).fillMaxHeight().padding(12.dp))
+                EditorPanel(
+                    state = state,
+                    onDone = { onDone(state.macros.toList()) },
+                    onCancel = onCancel,
+                    modifier = Modifier.width(minOf(380.dp, maxWidth * 0.45f)).fillMaxHeight().padding(8.dp),
+                )
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                TouchscreenPreview(state, Modifier.weight(1f).fillMaxWidth().padding(12.dp))
+                EditorPanel(
+                    state = state,
+                    onDone = { onDone(state.macros.toList()) },
+                    onCancel = onCancel,
+                    modifier = Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.55f).padding(8.dp),
+                )
+            }
         }
+    }
+}
 
-        state.macros.forEach { macro ->
-            MacroMarker(state, macro)
+/** The DS touchscreen at the largest 4:3 size that fits, with the macro markers on it. */
+@Composable
+private fun TouchscreenPreview(state: TouchMacroEditorState, modifier: Modifier) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        BoxWithConstraints(
+            Modifier
+                .aspectRatio(256f / 192f)
+                .border(2.dp, Color.White)
+        ) {
+            val widthPx = constraints.maxWidth.toFloat()
+            val heightPx = constraints.maxHeight.toFloat()
+
+            val image = state.touchscreenImage
+            if (image != null) {
+                Image(
+                    bitmap = image,
+                    contentDescription = null,
+                    contentScale = ContentScale.FillBounds,
+                    filterQuality = FilterQuality.None,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Box(Modifier.fillMaxSize().background(Color.DarkGray), contentAlignment = Alignment.Center) {
+                    Text(stringResource(R.string.macro_no_preview), color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.padding(16.dp))
+                }
+            }
+
+            state.macros.forEach { macro ->
+                MacroMarker(state, macro, widthPx, heightPx)
+            }
         }
-
-        // the panel goes on whichever side has more room
-        val panelAtTop = rect.center.y > heightPx / 2
-        EditorPanel(
-            state = state,
-            onDone = { onDone(state.macros.toList()) },
-            onCancel = onCancel,
-            modifier = Modifier
-                .align(if (panelAtTop) Alignment.TopCenter else Alignment.BottomCenter)
-                .padding(8.dp)
-                .widthIn(max = 560.dp),
-        )
     }
 }
 
 @Composable
-private fun MacroMarker(state: TouchMacroEditorState, macro: TouchMacro) {
+private fun MacroMarker(state: TouchMacroEditorState, macro: TouchMacro, areaWidth: Float, areaHeight: Float) {
     val density = LocalDensity.current
     val sizeDp = 44.dp
     val sizePx = with(density) { sizeDp.toPx() }
-    val center = state.toScreen(macro.x, macro.y)
+    val centerX = (macro.x + 0.5f) / 256f * areaWidth
+    val centerY = (macro.y + 0.5f) / 192f * areaHeight
     val selected = state.selectedId == macro.id
-    val rect = state.touchRect
 
     // fractional DS position while dragging, so slow drags don't get lost to rounding
     val dragPosition = remember(macro.id) { floatArrayOf(0f, 0f) }
 
     Box(
         modifier = Modifier
-            .offset { IntOffset((center.x - sizePx / 2).roundToInt(), (center.y - sizePx / 2).roundToInt()) }
+            .offset { IntOffset((centerX - sizePx / 2).roundToInt(), (centerY - sizePx / 2).roundToInt()) }
             .size(sizeDp)
             .background(
                 color = (if (selected) MaterialTheme.colors.secondary else MaterialTheme.colors.primary).copy(alpha = 0.55f),
@@ -215,7 +238,7 @@ private fun MacroMarker(state: TouchMacroEditorState, macro: TouchMacro) {
             .pointerInput(macro.id) {
                 detectTapGestures(onTap = { state.select(macro.id) })
             }
-            .pointerInput(macro.id) {
+            .pointerInput(macro.id, areaWidth, areaHeight) {
                 detectDragGestures(
                     onDragStart = {
                         state.select(macro.id)
@@ -225,8 +248,8 @@ private fun MacroMarker(state: TouchMacroEditorState, macro: TouchMacro) {
                     },
                 ) { change, drag ->
                     change.consume()
-                    dragPosition[0] = (dragPosition[0] + drag.x / rect.width * 256f).coerceIn(0f, 255f)
-                    dragPosition[1] = (dragPosition[1] + drag.y / rect.height * 192f).coerceIn(0f, 191f)
+                    dragPosition[0] = (dragPosition[0] + drag.x / areaWidth * 256f).coerceIn(0f, 255f)
+                    dragPosition[1] = (dragPosition[1] + drag.y / areaHeight * 192f).coerceIn(0f, 191f)
                     state.update(macro.id) { it.copy(x = dragPosition[0].roundToInt(), y = dragPosition[1].roundToInt()) }
                 }
             },

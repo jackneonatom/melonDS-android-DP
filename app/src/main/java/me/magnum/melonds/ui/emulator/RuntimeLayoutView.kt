@@ -1,6 +1,5 @@
 package me.magnum.melonds.ui.emulator
 
-import android.view.View
 
 import android.content.Context
 import android.util.AttributeSet
@@ -121,12 +120,6 @@ class RuntimeLayoutView(context: Context, attrs: AttributeSet? = null) : LayoutV
         }
 
         updateScreenInputs()
-    }
-
-    /** The view showing the DS touchscreen (the bottom screen, or the top one when swapped), if visible. */
-    fun getTouchScreenView(): View? {
-        val component = if (areScreensSwapped) LayoutComponent.TOP_SCREEN else LayoutComponent.BOTTOM_SCREEN
-        return getLayoutComponentView(component)?.view?.takeIf { it.isShown && it.width > 0 && it.height > 0 }
     }
 
     private fun updateScreenInputs() {
