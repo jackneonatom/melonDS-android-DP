@@ -156,6 +156,8 @@ fun TouchMacroEditor(
             }
     ) {
         val landscape = maxWidth > maxHeight
+        val panelWidth = minOf(380.dp, maxWidth * 0.45f)
+        val panelMaxHeight = maxHeight * 0.55f
         if (landscape) {
             Row(Modifier.fillMaxSize()) {
                 TouchscreenPreview(state, Modifier.weight(1f).fillMaxHeight().padding(12.dp))
@@ -163,7 +165,7 @@ fun TouchMacroEditor(
                     state = state,
                     onDone = { onDone(state.macros.toList()) },
                     onCancel = onCancel,
-                    modifier = Modifier.width(minOf(380.dp, maxWidth * 0.45f)).fillMaxHeight().padding(8.dp),
+                    modifier = Modifier.width(panelWidth).fillMaxHeight().padding(8.dp),
                 )
             }
         } else {
@@ -173,7 +175,7 @@ fun TouchMacroEditor(
                     state = state,
                     onDone = { onDone(state.macros.toList()) },
                     onCancel = onCancel,
-                    modifier = Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.55f).padding(8.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = panelMaxHeight).padding(8.dp),
                 )
             }
         }
