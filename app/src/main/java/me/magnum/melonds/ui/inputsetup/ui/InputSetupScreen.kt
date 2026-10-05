@@ -62,6 +62,7 @@ import me.magnum.melonds.R
 import me.magnum.melonds.domain.model.Input
 import me.magnum.melonds.domain.model.InputConfig
 import me.magnum.melonds.ui.common.MelonPreviewSet
+import me.magnum.melonds.ui.common.input.BindingCapture
 import me.magnum.melonds.ui.inputsetup.InputSetupViewModel
 import me.magnum.melonds.ui.theme.MelonTheme
 
@@ -74,6 +75,7 @@ fun InputSetupScreen(
     val inputUnderConfiguration by viewModel.inputUnderAssignment.collectAsStateWithLifecycle()
 
     InputSetupScreenContent(
+        gameName = viewModel.gameName,
         inputConfig = inputConfig,
         inputUnderConfiguration = inputUnderConfiguration,
         onInputAssignedEvent = viewModel.onInputAssignedEvent,
@@ -96,6 +98,7 @@ private fun sectionOf(input: Input): MappingSection = when {
 
 @Composable
 private fun InputSetupScreenContent(
+    gameName: String? = null,
     inputConfig: List<InputConfig>,
     inputUnderConfiguration: Input?,
     onInputAssignedEvent: Flow<Input>,
@@ -129,7 +132,14 @@ private fun InputSetupScreenContent(
         topBar = {
             Box(Modifier.background(MaterialTheme.colors.primaryVariant).statusBarsPadding()) {
                 TopAppBar(
-                    title = { Text(stringResource(R.string.key_mapping)) },
+                    title = {
+                        Column {
+                            Text(stringResource(R.string.key_mapping))
+                            if (gameName != null) {
+                                Text(gameName, style = MaterialTheme.typography.caption)
+                            }
+                        }
+                    },
                     backgroundColor = MaterialTheme.colors.primary,
                     navigationIcon = {
                         IconButton(onClick = onBackClick) {
@@ -328,31 +338,7 @@ private fun AddChip(onClick: () -> Unit, emphasized: Boolean) {
     }
 }
 
-private fun describeAssignment(assignment: InputConfig.Assignment): String {
-    return when (assignment) {
-        is InputConfig.Assignment.Key -> {
-            KeyEvent.keyCodeToString(assignment.keyCode).replace("KEYCODE", "").replace("_", " ").trim()
-        }
-        is InputConfig.Assignment.Axis -> {
-            val positive = assignment.direction == InputConfig.Assignment.Axis.Direction.POSITIVE
-            when (assignment.axisCode) {
-                MotionEvent.AXIS_X -> if (positive) "Left stick →" else "Left stick ←"
-                MotionEvent.AXIS_Y -> if (positive) "Left stick ↓" else "Left stick ↑"
-                MotionEvent.AXIS_Z -> if (positive) "Right stick →" else "Right stick ←"
-                MotionEvent.AXIS_RZ -> if (positive) "Right stick ↓" else "Right stick ↑"
-                MotionEvent.AXIS_HAT_X -> if (positive) "D-pad →" else "D-pad ←"
-                MotionEvent.AXIS_HAT_Y -> if (positive) "D-pad ↓" else "D-pad ↑"
-                MotionEvent.AXIS_LTRIGGER, MotionEvent.AXIS_BRAKE -> "Left trigger"
-                MotionEvent.AXIS_RTRIGGER, MotionEvent.AXIS_GAS -> "Right trigger"
-                else -> {
-                    val name = MotionEvent.axisToString(assignment.axisCode).removePrefix("AXIS_").replace("_", " ").trim()
-                    if (positive) "$name +" else "$name −"
-                }
-            }
-        }
-        InputConfig.Assignment.None -> ""
-    }
-}
+private fun describeAssignment(assignment: InputConfig.Assignment): String = BindingCapture.describe(assignment)
 
 @Composable
 private fun WaitingForInputOverlay(inputName: String, onCancel: () -> Unit) {

@@ -1,8 +1,6 @@
 package me.magnum.melonds.ui.emulator.input
 
 import android.view.Choreographer
-import me.magnum.melonds.MelonEmulator
-import me.magnum.melonds.domain.model.Input
 import me.magnum.melonds.domain.model.TouchStickSettings
 
 /**
@@ -11,28 +9,11 @@ import me.magnum.melonds.domain.model.TouchStickSettings
  */
 class TouchStickController(settings: TouchStickSettings) {
 
-    /** Set by the on-screen touch handler while a real finger is down. */
-    object FingerState {
-        @Volatile
-        var touching = false
-    }
-
     private val sink = object : TouchStickMapper.TouchSink {
-        override fun press(x: Int, y: Int) {
-            MelonEmulator.onInputDown(Input.TOUCHSCREEN)
-            MelonEmulator.onScreenTouch(x, y)
-        }
-
-        override fun move(x: Int, y: Int) {
-            MelonEmulator.onScreenTouch(x, y)
-        }
-
-        override fun release() {
-            MelonEmulator.onInputUp(Input.TOUCHSCREEN)
-            MelonEmulator.onScreenRelease()
-        }
-
-        override fun isFingerTouching(): Boolean = FingerState.touching
+        override fun press(x: Int, y: Int) = TouchRouter.set(TouchArbiter.Source.STICK, true, x, y)
+        override fun move(x: Int, y: Int) = TouchRouter.set(TouchArbiter.Source.STICK, true, x, y)
+        override fun release() = TouchRouter.set(TouchArbiter.Source.STICK, false)
+        override fun isFingerTouching(): Boolean = TouchRouter.higherPriorityActive(TouchArbiter.Source.STICK)
     }
 
     private val mapper = TouchStickMapper(settings, sink)

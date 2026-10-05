@@ -139,11 +139,11 @@ class TouchStickMapperTest {
         m.setStick(1f, 0f)
         assertTrue(s.down)
 
-        // the finger touches: the on-screen handler presses/moves itself; the mapper stops touching
+        // a finger (or macro) touches: the stick gives up its touch
         s.finger = true
-        s.down = false // the finger handler took over; its lift releases the screen
         m.tick(16f)
         assertFalse(s.down)
+        assertEquals("release", s.events.last())
 
         s.finger = false
         m.tick(16f)

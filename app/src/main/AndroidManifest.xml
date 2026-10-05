@@ -79,6 +79,11 @@
             android:exported="false">
         </activity>
         <activity
+            android:name=".ui.gamecontrols.GameControlsActivity"
+            android:label="@string/game_controls"
+            android:exported="false">
+        </activity>
+        <activity
             android:name=".ui.localmultiplayer.LocalMultiplayerActivity"
             android:label="@string/local_multiplayer"
             android:parentActivityName=".ui.romlist.RomListActivity"

@@ -1,6 +1,7 @@
 package me.magnum.melonds.ui.inputsetup
 
-import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.view.InputDevice
@@ -16,23 +17,29 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
-import me.magnum.melonds.domain.model.InputConfig
+import me.magnum.melonds.ui.common.input.BindingCapture
 import me.magnum.melonds.ui.inputsetup.ui.InputSetupScreen
 import me.magnum.melonds.ui.theme.MelonTheme
-import kotlin.math.absoluteValue
 
 @AndroidEntryPoint
 class InputSetupActivity : AppCompatActivity() {
 
+    companion object {
+        const val KEY_GAME_KEY = "game_key"
+        const val KEY_GAME_NAME = "game_name"
+
+        /** Edit one game's own key mapping instead of the global one. */
+        fun intentForGame(context: Context, gameKey: String, gameName: String): Intent {
+            return Intent(context, InputSetupActivity::class.java).apply {
+                putExtra(KEY_GAME_KEY, gameKey)
+                putExtra(KEY_GAME_NAME, gameName)
+            }
+        }
+    }
+
     private val viewModel: InputSetupViewModel by viewModels()
 
-    /**
-     * Per axis, what we've seen since the current assignment started: the first value and whether it
-     * has changed since. An axis that reads fully pegged and never moves is most likely a trigger
-     * that rests at -1 on that controller, not something the user is pushing.
-     */
-    private class AxisObservation(val firstValue: Float, var changed: Boolean = false)
-    private val observedAxes = mutableMapOf<Int, AxisObservation>()
+    private val bindingCapture = BindingCapture()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT))
@@ -52,7 +59,7 @@ class InputSetupActivity : AppCompatActivity() {
                 viewModel.inputUnderAssignment.collect {
                     if (it != null) {
                         // a new assignment has started
-                        observedAxes.clear()
+                        bindingCapture.reset()
                     }
                 }
             }
@@ -61,39 +68,10 @@ class InputSetupActivity : AppCompatActivity() {
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         if (viewModel.inputUnderAssignment.value != null && event.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK)) {
-            if (event.action == MotionEvent.ACTION_MOVE) {
-                val axes = event.device?.motionRanges
-                    ?.filter { it.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK) }
-                    ?.map { it.axis }
-                    ?.distinct()
-                    .orEmpty()
-
-                var bestAxis = -1
-                var bestValue = 0f
-                axes.forEach { axis ->
-                    val value = event.getAxisValue(axis)
-                    val observation = observedAxes.getOrPut(axis) { AxisObservation(value) }
-                    if ((value - observation.firstValue).absoluteValue > 0.05f) {
-                        observation.changed = true
-                    }
-
-                    val restingPegged = !observation.changed && observation.firstValue.absoluteValue >= 0.9f
-                    if (value.absoluteValue >= 0.5f && !restingPegged && value.absoluteValue > bestValue.absoluteValue) {
-                        bestAxis = axis
-                        bestValue = value
-                    }
-                }
-
-                if (bestAxis >= 0) {
-                    val direction = if (bestValue > 0f) {
-                        InputConfig.Assignment.Axis.Direction.POSITIVE
-                    } else {
-                        InputConfig.Assignment.Axis.Direction.NEGATIVE
-                    }
-                    viewModel.updateInputAssignedAxis(bestAxis, direction)
-                }
-                return true
+            bindingCapture.onMotion(event)?.let { axis ->
+                viewModel.updateInputAssignedAxis(axis.axisCode, axis.direction)
             }
+            return true
         }
 
         return super.onGenericMotionEvent(event)
@@ -101,9 +79,8 @@ class InputSetupActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && viewModel.inputUnderAssignment.value != null) {
-            @SuppressLint("GestureBackNavigation")
-            if (event.keyCode != KeyEvent.KEYCODE_BACK) {
-                viewModel.updateInputAssignedKey(event.keyCode)
+            bindingCapture.onKeyDown(event)?.let { key ->
+                viewModel.updateInputAssignedKey(key.keyCode)
                 return true
             }
         }

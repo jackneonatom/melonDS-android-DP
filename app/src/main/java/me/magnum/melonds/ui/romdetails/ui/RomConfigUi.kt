@@ -1,5 +1,7 @@
 package me.magnum.melonds.ui.romdetails.ui
 
+import me.magnum.melonds.ui.gamecontrols.GameControlsActivity
+import me.magnum.melonds.domain.repositories.GameInputProfileRepository
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
@@ -151,6 +153,16 @@ private fun Content(
                     putExtra(LayoutSelectorActivity.KEY_SELECTED_LAYOUT_ID, romConfig.layoutId?.toString())
                 }
                 layoutSelectorLauncher.launch(intent)
+            }
+        )
+
+        ActionLauncherItem(
+            name = stringResource(id = R.string.game_controls),
+            value = stringResource(id = R.string.game_controls_summary),
+            onLaunchAction = {
+                context.startActivity(
+                    GameControlsActivity.intent(context, GameInputProfileRepository.gameKey(rom), romConfig.customName ?: rom.name)
+                )
             }
         )
 

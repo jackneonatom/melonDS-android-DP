@@ -42,4 +42,37 @@
     <string name="mapping_reset_defaults_confirm">Replace all key mappings with the defaults?</string>
     <string name="mapping_help">Tap a control to add a button or stick direction. A control can have several bindings, and one button can drive several controls.</string>
     <string name="mapping_already_used">Also bound to: %1$s</string>
+
+    <!-- Per-game controls -->
+    <string name="game_controls">Controls for this game</string>
+    <string name="game_controls_summary">Key mapping, analog → touch and touch macros</string>
+    <string name="game_controls_use_global">Same as global</string>
+    <string name="game_controls_custom">Custom for this game</string>
+    <string name="game_controls_edit_mapping">Edit this game\'s key mapping</string>
+    <string name="game_controls_macros_hint">To place or edit macros, start the game, open the pause menu and choose Touch macros.</string>
+    <string name="game_controls_no_macros">No touch macros for this game.</string>
+    <string name="game_controls_delete_macros">Delete all macros</string>
+    <string name="game_controls_delete_macros_confirm">Delete all touch macros for this game?</string>
+    <string name="game_controls_reset">Use global settings for everything</string>
+    <string name="game_controls_reset_confirm">Remove this game\'s own key mapping, analog → touch settings and touch macros?</string>
+    <string name="touch_stick_mode_off">Off</string>
+    <string name="touch_stick_mode_joystick">Joystick (on-screen stick or d-pad)</string>
+    <string name="touch_stick_mode_camera">Camera / FPS (drag to aim or look)</string>
+
+    <!-- Touch macros -->
+    <string name="touch_macros">Touch macros</string>
+    <string name="macro_add">Add</string>
+    <string name="macro_done">Save</string>
+    <string name="macro_hint_empty">Tap Add, drag the numbered marker onto a touch control in the game, then bind a controller button to it.</string>
+    <string name="macro_hint_select">Tap a marker to edit it.</string>
+    <string name="macro_name">Name</string>
+    <string name="macro_mode">On press:</string>
+    <string name="macro_mode_hold">Hold</string>
+    <string name="macro_mode_tap">Tap</string>
+    <string name="macro_press_button">Press a controller button or move a stick… (Back to cancel)</string>
+    <string name="macro_bind_button">Bind a button</string>
+    <string name="macro_bind_another">Bind another</string>
+    <string name="macro_drag_hint">Drag the marker to move it.</string>
+    <string name="macro_delete">Delete</string>
+    <string name="macro_touchscreen_hidden">The touchscreen isn\'t visible in the current layout, so macros can\'t be placed.</string>
 </resources>

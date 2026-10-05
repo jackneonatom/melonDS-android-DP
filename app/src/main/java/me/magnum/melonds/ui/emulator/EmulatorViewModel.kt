@@ -1,5 +1,9 @@
 package me.magnum.melonds.ui.emulator
 
+import me.magnum.melonds.domain.repositories.GameInputProfileRepository
+import me.magnum.melonds.domain.model.TouchStickSettings
+import me.magnum.melonds.domain.model.TouchMacro
+import me.magnum.melonds.domain.model.GameInputProfile
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
@@ -113,6 +117,7 @@ class EmulatorViewModel @Inject constructor(
     private val emulatorManager: EmulatorManager,
     private val emulatorSession: EmulatorSession,
     private val retroAchievementsSubmissionHandler: RetroAchievementsSubmissionHandler,
+    private val gameInputProfileRepository: GameInputProfileRepository,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -129,7 +134,15 @@ class EmulatorViewModel @Inject constructor(
     private val _runtimeLayout = MutableStateFlow<RuntimeInputLayoutConfiguration?>(null)
     val runtimeLayout = _runtimeLayout.asStateFlow()
 
-    val controllerConfiguration = settingsRepository.observeControllerConfiguration()
+    /** Input profile of the running game (null when running the firmware). */
+    private val _gameInputProfile = MutableStateFlow<GameInputProfile?>(null)
+    val gameInputProfile = _gameInputProfile.asStateFlow()
+    private var gameInputProfileKey: String? = null
+
+    /** The game's own key mapping if it has one, otherwise the global mapping. */
+    val controllerConfiguration = combine(settingsRepository.observeControllerConfiguration(), _gameInputProfile) { global, profile ->
+        profile?.controllerConfiguration ?: global
+    }
 
     private val _runtimeRendererConfiguration = MutableStateFlow<RuntimeRendererConfiguration?>(null)
     val runtimeRendererConfiguration = _runtimeRendererConfiguration.asStateFlow()
@@ -264,6 +277,7 @@ class EmulatorViewModel @Inject constructor(
                 if (!result.isGbaLoadSuccessful) {
                     _toastEvent.tryEmit(ToastEvent.GbaLoadFailed)
                 }
+                loadGameInputProfile(rom)
                 _emulatorState.value = EmulatorState.RunningRom(rom)
                 startTrackingFps()
                 startTrackingPlayTime(rom)
@@ -289,12 +303,43 @@ class EmulatorViewModel @Inject constructor(
                         _emulatorState.value = EmulatorState.FirmwareLoadError(result.reason)
                     }
                     FirmwareLaunchResult.LaunchSuccessful -> {
+                        gameInputProfileKey = null
+                        _gameInputProfile.value = null
                         _emulatorState.value = EmulatorState.RunningFirmware(consoleType)
                         startTrackingFps()
                     }
                 }
             }
         }
+    }
+
+    private fun loadGameInputProfile(rom: Rom) {
+        val key = GameInputProfileRepository.gameKey(rom)
+        gameInputProfileKey = key
+        _gameInputProfile.value = gameInputProfileRepository.getProfile(key)
+    }
+
+    /** Re-read the running game's profile, e.g. after editing it in another screen. */
+    fun reloadGameInputProfile() {
+        val key = gameInputProfileKey ?: return
+        _gameInputProfile.value = gameInputProfileRepository.getProfile(key)
+    }
+
+    /** The running game's id and display name, for opening its controls screen. */
+    fun currentGameForInputProfile(): Pair<String, String>? {
+        val rom = (_emulatorState.value as? EmulatorState.RunningRom)?.rom ?: return null
+        return GameInputProfileRepository.gameKey(rom) to (rom.config.customName ?: rom.name)
+    }
+
+    fun getEffectiveTouchStickSettings(): TouchStickSettings {
+        return _gameInputProfile.value?.touchStick ?: settingsRepository.getTouchStickSettings()
+    }
+
+    fun saveTouchMacros(macros: List<TouchMacro>) {
+        val key = gameInputProfileKey ?: return
+        val updated = gameInputProfileRepository.getProfile(key).copy(macros = macros)
+        gameInputProfileRepository.saveProfile(key, updated)
+        _gameInputProfile.value = updated
     }
 
     fun setSystemOrientation(orientation: Orientation) {
@@ -453,6 +498,14 @@ class EmulatorViewModel @Inject constructor(
                         }
                     }
                     RomPauseMenuOption.VIEW_ACHIEVEMENTS -> _uiEvent.tryEmit(EmulatorUiEvent.ShowAchievementList)
+                    RomPauseMenuOption.TOUCH_MACROS -> {
+                        _uiEvent.tryEmit(EmulatorUiEvent.ShowTouchMacroEditor(_gameInputProfile.value?.macros.orEmpty()))
+                    }
+                    RomPauseMenuOption.GAME_CONTROLS -> {
+                        currentGameForInputProfile()?.let { (key, name) ->
+                            _uiEvent.tryEmit(EmulatorUiEvent.OpenScreen.GameControlsScreen(key, name))
+                        }
+                    }
                     RomPauseMenuOption.RESET -> resetEmulator()
                     RomPauseMenuOption.EXIT -> exitEmulator(force = false)
                 }

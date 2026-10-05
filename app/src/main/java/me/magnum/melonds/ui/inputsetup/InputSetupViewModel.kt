@@ -1,6 +1,8 @@
 package me.magnum.melonds.ui.inputsetup
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
+import me.magnum.melonds.domain.repositories.GameInputProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -21,9 +23,15 @@ import javax.inject.Inject
 class InputSetupViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val controllerConfigurationFactory: ControllerConfigurationFactory,
+    private val gameInputProfileRepository: GameInputProfileRepository,
+    savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
-    private val _inputConfig = MutableStateFlow(settingsRepository.getControllerConfiguration().inputMapper)
+    /** Set when editing one game's own mapping rather than the global one. */
+    private val gameKey: String? = savedStateHandle.get<String>(InputSetupActivity.KEY_GAME_KEY)
+    val gameName: String? = savedStateHandle.get<String>(InputSetupActivity.KEY_GAME_NAME)
+
+    private val _inputConfig = MutableStateFlow(loadConfiguration().inputMapper)
     val inputConfiguration = _inputConfig.asStateFlow()
 
     private val _inputUnderAssignment = MutableStateFlow<Input?>(null)
@@ -61,7 +69,22 @@ class InputSetupViewModel @Inject constructor(
         _inputUnderAssignment.value = null
         val defaults = controllerConfigurationFactory.buildDefaultControllerConfiguration()
         _inputConfig.value = defaults.inputMapper
-        settingsRepository.setControllerConfiguration(defaults)
+        saveConfiguration(defaults)
+    }
+
+    private fun loadConfiguration(): ControllerConfiguration {
+        val key = gameKey ?: return settingsRepository.getControllerConfiguration()
+        return gameInputProfileRepository.getProfile(key).controllerConfiguration ?: settingsRepository.getControllerConfiguration()
+    }
+
+    private fun saveConfiguration(configuration: ControllerConfiguration) {
+        val key = gameKey
+        if (key == null) {
+            settingsRepository.setControllerConfiguration(configuration)
+        } else {
+            val profile = gameInputProfileRepository.getProfile(key)
+            gameInputProfileRepository.saveProfile(key, profile.copy(controllerConfiguration = configuration))
+        }
     }
 
     /** Other controls the same physical input is bound to (it's allowed, but worth showing). */
@@ -89,7 +112,7 @@ class InputSetupViewModel @Inject constructor(
 
         val updated = current.toMutableList().apply { this[index] = change(this[index]) }
         _inputConfig.value = updated
-        settingsRepository.setControllerConfiguration(ControllerConfiguration(updated))
+        saveConfiguration(ControllerConfiguration(updated))
     }
 
     private fun focusOnNextInput(currentInput: Input) {

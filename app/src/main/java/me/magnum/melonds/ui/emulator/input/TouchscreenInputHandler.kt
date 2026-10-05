@@ -4,28 +4,24 @@ import android.annotation.SuppressLint
 import android.view.MotionEvent
 import android.view.MotionEvent.PointerCoords
 import android.view.View
-import me.magnum.melonds.MelonEmulator.onScreenRelease
-import me.magnum.melonds.domain.model.Input
 import me.magnum.melonds.domain.model.Point
 
+/**
+ * Real finger on the on-screen touchscreen. Goes through [TouchRouter], where a finger always takes
+ * priority over touch macros and the analog touch stick.
+ */
 class TouchscreenInputHandler(inputListener: IInputListener) : BaseInputHandler(inputListener) {
     private val touchPoint: Point = Point()
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouch(v: View, event: MotionEvent): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
-                TouchStickController.FingerState.touching = true
-                inputListener.onKeyPress(Input.TOUCHSCREEN)
-                inputListener.onTouch(normalizeTouchCoordinates(event, v.width, v.height))
-            }
-            MotionEvent.ACTION_MOVE -> {
-                inputListener.onTouch(normalizeTouchCoordinates(event, v.width, v.height))
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                val point = normalizeTouchCoordinates(event, v.width, v.height)
+                TouchRouter.set(TouchArbiter.Source.FINGER, true, point.x, point.y)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                TouchStickController.FingerState.touching = false
-                inputListener.onKeyReleased(Input.TOUCHSCREEN)
-                onScreenRelease()
+                TouchRouter.set(TouchArbiter.Source.FINGER, false)
             }
         }
         return true

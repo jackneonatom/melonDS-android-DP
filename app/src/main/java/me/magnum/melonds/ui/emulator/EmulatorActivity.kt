@@ -1,5 +1,13 @@
 package me.magnum.melonds.ui.emulator
 
+import android.view.InputDevice
+import kotlinx.coroutines.flow.combine
+import me.magnum.melonds.ui.gamecontrols.GameControlsActivity
+import me.magnum.melonds.domain.model.TouchMacro
+import me.magnum.melonds.ui.emulator.input.TouchRouter
+import me.magnum.melonds.ui.common.input.BindingCapture
+import me.magnum.melonds.ui.emulator.macros.TouchMacroEditorState
+import me.magnum.melonds.ui.emulator.macros.TouchMacroEditor
 import me.magnum.melonds.ui.emulator.input.TouchStickController
 import me.magnum.melonds.domain.repositories.SettingsRepository
 import android.content.Context
@@ -169,8 +177,12 @@ class EmulatorActivity : AppCompatActivity() {
     @Inject
     lateinit var settingsRepository: SettingsRepository
 
-    private val touchStickController by lazy { TouchStickController(settingsRepository.getTouchStickSettings()) }
+    private val touchStickController by lazy { TouchStickController(viewModel.getEffectiveTouchStickSettings()) }
     private var inputProcessor: InputProcessor? = null
+
+    private val macroEditorState = mutableStateOf<TouchMacroEditorState?>(null)
+    private val macroBindingCapture = BindingCapture()
+    private var macroCaptureSession = -1
 
     private var presentation: ExternalPresentation? = null
 
@@ -256,6 +268,10 @@ class EmulatorActivity : AppCompatActivity() {
         viewModel.onSettingsChanged()
         setupSustainedPerformanceMode()
         setupFpsCounter()
+        viewModel.resumeEmulator()
+    }
+    private val gameControlsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        viewModel.reloadGameInputProfile()
         viewModel.resumeEmulator()
     }
     private val cheatsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -391,6 +407,17 @@ class EmulatorActivity : AppCompatActivity() {
                     )
                 }
 
+                macroEditorState.value?.let { editorState ->
+                    TouchMacroEditor(
+                        state = editorState,
+                        onDone = { macros ->
+                            viewModel.saveTouchMacros(macros)
+                            closeTouchMacroEditor()
+                        },
+                        onCancel = ::closeTouchMacroEditor,
+                    )
+                }
+
                 if (showPendingSubmissionsDialog.value) {
                     PendingSubmissionsDialog(
                         pendingSubmissionsSummaryFlow = viewModel.pendingSubmissionsSummary,
@@ -422,9 +449,12 @@ class EmulatorActivity : AppCompatActivity() {
         }
         lifecycleScope.launch {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.controllerConfiguration.collect {
-                    setupInputHandling(it)
-                    connectedControllerManager.setCurrentControllerConfiguration(it)
+                combine(viewModel.controllerConfiguration, viewModel.gameInputProfile) { configuration, profile ->
+                    configuration to profile
+                }.collect { (configuration, profile) ->
+                    setupInputHandling(configuration, profile?.macros.orEmpty())
+                    touchStickController.settings = viewModel.getEffectiveTouchStickSettings()
+                    connectedControllerManager.setCurrentControllerConfiguration(configuration)
                 }
             }
         }
@@ -510,6 +540,10 @@ class EmulatorActivity : AppCompatActivity() {
                             intent.putExtra(CheatsActivity.KEY_ROM_INFO, RomInfoParcelable.fromRomInfo(it.romInfo))
                             cheatsLauncher.launch(intent)
                         }
+                        is EmulatorUiEvent.OpenScreen.GameControlsScreen -> {
+                            gameControlsLauncher.launch(GameControlsActivity.intent(this@EmulatorActivity, it.gameKey, it.gameName))
+                        }
+                        is EmulatorUiEvent.ShowTouchMacroEditor -> openTouchMacroEditor(it.macros)
                         EmulatorUiEvent.OpenScreen.SettingsScreen -> {
                             val settingsIntent = Intent(this@EmulatorActivity, SettingsActivity::class.java)
                             settingsLauncher.launch(settingsIntent)
@@ -730,7 +764,8 @@ class EmulatorActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         // settings may have changed in another screen
-        touchStickController.settings = settingsRepository.getTouchStickSettings()
+        viewModel.reloadGameInputProfile()
+        touchStickController.settings = viewModel.getEffectiveTouchStickSettings()
         choreographerFrameRenderer.startRendering()
         emulatorMotionManager.resume()
 
@@ -859,9 +894,19 @@ class EmulatorActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupInputHandling(controllerConfiguration: ControllerConfiguration) {
+    private fun setupInputHandling(controllerConfiguration: ControllerConfiguration, touchMacros: List<TouchMacro>) {
         inputProcessor?.releaseAll()
-        val processor = InputProcessor(controllerConfiguration, melonTouchHandler, frontendInputHandler, touchStickController::onStick)
+        TouchRouter.setMacros(touchMacros)
+        val processor = InputProcessor(
+            controllerConfiguration = controllerConfiguration,
+            systemInputListener = melonTouchHandler,
+            frontendInputListener = frontendInputHandler,
+            touchStickListener = touchStickController::onStick,
+            touchMacros = touchMacros,
+            touchMacroListener = { macroId, pressed ->
+                if (pressed) TouchRouter.onMacroPressed(macroId) else TouchRouter.onMacroReleased(macroId)
+            },
+        )
         inputProcessor = processor
         nativeInputListener = processor
     }
@@ -899,7 +944,57 @@ class EmulatorActivity : AppCompatActivity() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
+    private fun openTouchMacroEditor(macros: List<TouchMacro>) {
+        val touchView = binding.viewLayoutControls.getTouchScreenView()
+        if (touchView == null) {
+            Toast.makeText(this, R.string.macro_touchscreen_hidden, Toast.LENGTH_LONG).show()
+            viewModel.resumeEmulator()
+            return
+        }
+
+        // where the touchscreen is drawn, relative to the Compose layer the editor lives in
+        val viewLocation = IntArray(2)
+        val composeLocation = IntArray(2)
+        touchView.getLocationInWindow(viewLocation)
+        binding.layoutCompose.getLocationInWindow(composeLocation)
+        val left = (viewLocation[0] - composeLocation[0]).toFloat()
+        val top = (viewLocation[1] - composeLocation[1]).toFloat()
+        val rect = androidx.compose.ui.geometry.Rect(left, top, left + touchView.width, top + touchView.height)
+
+        inputProcessor?.releaseAll()
+        TouchRouter.reset()
+        activeOverlays.addActiveOverlay(EmulatorOverlay.TOUCH_MACRO_EDITOR)
+        macroCaptureSession = -1
+        macroEditorState.value = TouchMacroEditorState(macros, rect)
+    }
+
+    private fun closeTouchMacroEditor() {
+        macroEditorState.value = null
+        activeOverlays.removeActiveOverlay(EmulatorOverlay.TOUCH_MACRO_EDITOR)
+        viewModel.resumeEmulator()
+    }
+
+    /** The macro editor is waiting for a controller button; returns it if capture is active. */
+    private fun capturingMacroEditor(): TouchMacroEditorState? {
+        val editor = macroEditorState.value ?: return null
+        if (!editor.capturing) return null
+        if (editor.captureSession != macroCaptureSession) {
+            macroCaptureSession = editor.captureSession
+            macroBindingCapture.reset()
+        }
+        return editor
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        capturingMacroEditor()?.let { editor ->
+            if (event.keyCode != KeyEvent.KEYCODE_BACK) {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    macroBindingCapture.onKeyDown(event)?.let { editor.onBindingCaptured(it) }
+                }
+                return true
+            }
+        }
+
         if (!activeOverlays.hasActiveOverlays() && nativeInputListener.onKeyEvent(event))
             return true
 
@@ -907,6 +1002,13 @@ class EmulatorActivity : AppCompatActivity() {
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        capturingMacroEditor()?.let { editor ->
+            if (event.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK)) {
+                macroBindingCapture.onMotion(event)?.let { editor.onBindingCaptured(it) }
+                return true
+            }
+        }
+
         if (!activeOverlays.hasActiveOverlays() && nativeInputListener.onMotionEvent(event))
             return true
 
@@ -1030,6 +1132,7 @@ class EmulatorActivity : AppCompatActivity() {
         super.onPause()
         touchStickController.stop()
         inputProcessor?.releaseAll()
+        TouchRouter.reset()
         enableScreenTimeOut()
         choreographerFrameRenderer.stopRendering()
         emulatorMotionManager.pause()

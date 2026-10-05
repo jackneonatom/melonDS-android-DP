@@ -5,6 +5,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import me.magnum.melonds.domain.model.ControllerConfiguration
 import me.magnum.melonds.domain.model.Input
+import me.magnum.melonds.domain.model.InputConfig
+import me.magnum.melonds.domain.model.TouchMacro
 
 /**
  * Feeds Android key/motion events through [InputMappingEngine] and routes the resulting emulator inputs:
@@ -16,10 +18,14 @@ class InputProcessor(
     private val systemInputListener: IInputListener,
     private val frontendInputListener: IInputListener,
     private val touchStickListener: ((Float, Float) -> Unit)? = null,
+    touchMacros: List<TouchMacro> = emptyList(),
+    private val touchMacroListener: ((macroId: Int, pressed: Boolean) -> Unit)? = null,
 ) : INativeInputListener {
 
     private val engine = InputMappingEngine(
-        configuration = controllerConfiguration,
+        inputConfigs = controllerConfiguration.inputMapper + touchMacros.mapNotNull { macro ->
+            Input.touchMacro(macro.id)?.let { InputConfig(it, macro.assignments) }
+        },
         analogInputs = Input.TOUCH_STICK_DIRECTIONS.toSet(),
         onPress = { input -> route(input, true) },
         onRelease = { input -> route(input, false) },
@@ -28,6 +34,10 @@ class InputProcessor(
 
     private fun route(input: Input, pressed: Boolean) {
         if (input in Input.TOUCH_STICK_DIRECTIONS) return // handled as analog
+        Input.touchMacroId(input)?.let { macroId ->
+            touchMacroListener?.invoke(macroId, pressed)
+            return
+        }
         val listener = if (input.isSystemInput) systemInputListener else frontendInputListener
         if (pressed) listener.onKeyPress(input) else listener.onKeyReleased(input)
     }

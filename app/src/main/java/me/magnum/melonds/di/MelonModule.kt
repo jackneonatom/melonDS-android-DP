@@ -29,6 +29,8 @@ import me.magnum.melonds.domain.services.EmulatorLaunchPreconditionChecker
 import me.magnum.melonds.impl.AndroidDSiNandManager
 import me.magnum.melonds.impl.*
 import me.magnum.melonds.impl.input.ControllerConfigurationFactory
+import me.magnum.melonds.domain.repositories.GameInputProfileRepository
+import me.magnum.melonds.impl.FileGameInputProfileRepository
 import me.magnum.melonds.impl.input.DefaultControllerConfigurationFactory
 import me.magnum.melonds.impl.layout.DeviceLayoutDisplayMapper
 import me.magnum.melonds.impl.layout.DefaultLayoutProvider
@@ -48,6 +50,12 @@ object MelonModule {
     @Provides
     fun provideControllerConfigurationFactory(): ControllerConfigurationFactory {
         return DefaultControllerConfigurationFactory()
+    }
+
+    @Provides
+    @Singleton
+    fun provideGameInputProfileRepository(@ApplicationContext context: Context, json: Json): GameInputProfileRepository {
+        return FileGameInputProfileRepository(context.filesDir, json)
     }
 
     @Provides

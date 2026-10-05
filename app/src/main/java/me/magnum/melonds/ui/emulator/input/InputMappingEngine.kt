@@ -17,12 +17,20 @@ import kotlin.math.max
  * Pure Kotlin (no Android types) so it can be unit tested.
  */
 class InputMappingEngine(
-    configuration: ControllerConfiguration,
+    inputConfigs: List<InputConfig>,
     private val analogInputs: Set<Input> = emptySet(),
     private val onPress: (Input) -> Unit,
     private val onRelease: (Input) -> Unit,
     private val onAnalog: (Input, Float) -> Unit = { _, _ -> },
 ) {
+    constructor(
+        configuration: ControllerConfiguration,
+        analogInputs: Set<Input> = emptySet(),
+        onPress: (Input) -> Unit,
+        onRelease: (Input) -> Unit,
+        onAnalog: (Input, Float) -> Unit = { _, _ -> },
+    ) : this(configuration.inputMapper, analogInputs, onPress, onRelease, onAnalog)
+
     companion object {
         /** Stick deflection needed to press a button bound to an axis direction. */
         const val AXIS_PRESS_THRESHOLD = 0.5f
@@ -34,7 +42,7 @@ class InputMappingEngine(
         var active = false
     }
 
-    private val bindings: List<Binding> = configuration.inputMapper.flatMap { config ->
+    private val bindings: List<Binding> = inputConfigs.flatMap { config ->
         config.assignments.filter { it != InputConfig.Assignment.None }.map { Binding(config.input, it) }
     }
     private val bindingsByInput: Map<Input, List<Binding>> = bindings.groupBy { it.input }

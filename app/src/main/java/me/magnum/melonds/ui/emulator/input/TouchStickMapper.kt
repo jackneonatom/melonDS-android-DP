@@ -17,7 +17,7 @@ class TouchStickMapper(
         fun press(x: Int, y: Int)
         fun move(x: Int, y: Int)
         fun release()
-        /** True while a real finger is on the touchscreen; it always takes priority. */
+        /** True while something more important (a real finger, a touch macro) is using the touchscreen. */
         fun isFingerTouching(): Boolean
     }
 
@@ -144,10 +144,14 @@ class TouchStickMapper(
         sink.move(posX.toInt(), posY.toInt())
     }
 
-    /** A real finger always wins; once it lifts, the stick takes over again on the next update. */
+    /**
+     * A real finger or a macro always wins: give up our touch while it's active. Once it ends, the stick
+     * touches again on the next update (from the center, in camera mode).
+     */
     private fun yieldToFinger(): Boolean {
         if (sink.isFingerTouching()) {
-            pressed = false // the finger owns the touchscreen now; its release lifts it
+            releaseIfPressed()
+            liftFrames = 0
             return true
         }
         return false
